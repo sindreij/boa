@@ -109,6 +109,7 @@ pub struct StandardObjects {
     typed_float32_array: StandardConstructor,
     typed_float64_array: StandardConstructor,
     array_buffer: StandardConstructor,
+    proxy: StandardConstructor,
 }
 
 impl Default for StandardObjects {
@@ -154,6 +155,7 @@ impl Default for StandardObjects {
             typed_float32_array: StandardConstructor::default(),
             typed_float64_array: StandardConstructor::default(),
             array_buffer: StandardConstructor::default(),
+            proxy: StandardConstructor::default(),
         }
     }
 }
@@ -312,6 +314,11 @@ impl StandardObjects {
     #[inline]
     pub fn array_buffer_object(&self) -> &StandardConstructor {
         &self.array_buffer
+    }
+
+    #[inline]
+    pub fn proxy_object(&self) -> &StandardConstructor {
+        &self.proxy
     }
 }
 
