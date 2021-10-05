@@ -14,16 +14,20 @@
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy
 
 use crate::{
-    builtins::{function::make_builtin_fn, BuiltIn},
-    object::ConstructorBuilder,
+    builtins::{BuiltIn, JsArgs},
+    gc::{Finalize, Trace},
+    object::{ConstructorBuilder, JsObject, ObjectData},
     profiler::BoaProfiler,
     property::Attribute,
     Context, JsResult, JsValue,
 };
 
 /// `Proxy` implementation.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Proxy;
+#[derive(Debug, Clone, Trace, Finalize)]
+pub struct Proxy {
+    handler: JsObject,
+    target: JsObject,
+}
 
 impl BuiltIn for Proxy {
     const NAME: &'static str = "Number";
@@ -59,17 +63,57 @@ impl Proxy {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<JsValue> {
-        // let data = match args.get(0) {
-        //     Some(value) => value.to_numeric_number(context)?,
-        //     None => 0.0,
-        // };
-        // if new_target.is_undefined() {
-        //     return Ok(JsValue::new(data));
-        // }
-        // let prototype =
-        //     get_prototype_from_constructor(new_target, StandardObjects::proxy_object, context)?;
-        // let this = JsObject::from_proto_and_data(prototype, ObjectData::number(data));
-        // Ok(this.into())
-        todo!()
+        // 1. If NewTarget is undefined, throw a TypeError exception.
+        if new_target.is_undefined() {
+            context.throw_type_error("NewTarget was undefined")?;
+        }
+
+        let target = args.get_or_undefined(0);
+        let handler = args.get_or_undefined(1);
+
+        // 2. Return ? ProxyCreate(target, handler).
+        Self::create(target, handler, context)
+    }
+
+    /// `ProxyCreate ( target, handler )`
+    /// More information:
+    ///  - [ECMAScript reference][spec]
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-proxycreate
+    fn create(target: &JsValue, handler: &JsValue, context: &mut Context) -> JsResult<JsValue> {
+        // 1. If Type(target) is not Object, throw a TypeError exception.
+        let target = if let Some(obj) = target.as_object() {
+            obj
+        } else {
+            return context.throw_type_error("");
+        };
+
+        // 2. If Type(handler) is not Object, throw a TypeError exception.
+        let handler = if let Some(obj) = handler.as_object() {
+            obj
+        } else {
+            return context.throw_type_error("");
+        };
+
+        // 4. Set P's essential internal methods, except for [[Call]] and [[Construct]], to the definitions specified in 10.5.
+        // 5. If IsCallable(target) is true, then
+        if target.is_callable() {
+            // a. Set P.[[Call]] as specified in 10.5.12.
+            // TODO
+
+            // b. If IsConstructor(target) is true, then
+            if target.is_constructable() {
+                // i. Set P.[[Construct]] as specified in 10.5.13.
+                // TODO
+            }
+        }
+
+        // 3. Let P be ! MakeBasicObject(« [[ProxyHandler]], [[ProxyTarget]] »).
+        // 6. Set P.[[ProxyTarget]] to target.
+        // 7. Set P.[[ProxyHandler]] to handler.
+        let p = JsObject::from_proto_and_data(None, ObjectData::proxy(Self { handler, target }));
+
+        // 8. Return P.
+        Ok(p.into())
     }
 }

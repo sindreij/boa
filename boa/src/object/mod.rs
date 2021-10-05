@@ -13,7 +13,7 @@ use crate::{
         set::set_iterator::SetIterator,
         string::string_iterator::StringIterator,
         typed_array::integer_indexed_object::IntegerIndexed,
-        Date, RegExp,
+        Date, Proxy, RegExp,
     },
     context::StandardConstructor,
     gc::{Finalize, Trace},
@@ -118,6 +118,7 @@ pub enum ObjectKind {
     Arguments(Arguments),
     NativeObject(Box<dyn NativeObject>),
     IntegerIndexed(IntegerIndexed),
+    Proxy(Proxy),
 }
 
 impl ObjectData {
@@ -316,6 +317,13 @@ impl ObjectData {
             internal_methods: &INTEGER_INDEXED_EXOTIC_INTERNAL_METHODS,
         }
     }
+
+    pub fn proxy(proxy: Proxy) -> Self {
+        Self {
+            kind: ObjectKind::Proxy(proxy),
+            internal_methods: &ORDINARY_INTERNAL_METHODS,
+        }
+    }
 }
 
 impl Display for ObjectKind {
@@ -345,6 +353,7 @@ impl Display for ObjectKind {
             Self::Arguments(_) => "Arguments",
             Self::NativeObject(_) => "NativeObject",
             Self::IntegerIndexed(_) => "TypedArray",
+            Self::Proxy(_) => "Proxy",
         })
     }
 }
