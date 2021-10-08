@@ -89,6 +89,7 @@ dependencies = [
  "boa_profiler",
  "boa_unicode",
  "chrono",
+ "const-utf16",
  "criterion",
  "dyn-clone",
  "fast-float",
@@ -269,6 +270,12 @@ dependencies = [
  "lazy_static",
  "winapi",
 ]
+
+[[package]]
+name = "const-utf16"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90feefab165fe011746e3be2f0708b7b180fcbd9f5054ff81a454d7bd93d8285"
 
 [[package]]
 name = "criterion"
