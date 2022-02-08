@@ -144,7 +144,7 @@ impl JsValue {
                     // 1. Let syncMethod be ? GetMethod(obj, @@iterator).
                     let sync_method = self
                         .get_method(WellKnownSymbols::iterator(), context)?
-                        .map_or(Self::Undefined, Self::from);
+                        .map_or(Self::undefined(), Self::from);
                     // 2. Let syncIteratorRecord be ? GetIterator(obj, sync, syncMethod).
                     let _sync_iterator_record =
                         self.get_iterator(context, Some(IteratorHint::Sync), Some(sync_method));
@@ -154,7 +154,7 @@ impl JsValue {
             } else {
                 // b. Otherwise, set method to ? GetMethod(obj, @@iterator).
                 self.get_method(WellKnownSymbols::iterator(), context)?
-                    .map_or(Self::Undefined, Self::from)
+                    .map_or(Self::undefined(), Self::from)
             }
         };
 
