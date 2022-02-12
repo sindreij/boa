@@ -6,7 +6,6 @@ use std::{
     borrow::Borrow,
     cell::Cell,
     fmt,
-    marker::PhantomData,
     ops::{Deref, Index},
     ptr::{self, NonNull},
     slice::SliceIndex,
@@ -16,6 +15,16 @@ use crate::builtins::string::is_trimmable_whitespace;
 use boa_gc::{unsafe_empty_trace, Finalize, Trace};
 use const_utf16::encode as utf16;
 use rustc_hash::FxHashSet;
+
+#[macro_export]
+macro_rules! js_string {
+    ($s:literal) => {
+        JsString::from(utf16!($s))
+    };
+    ($s:expr) => {
+        JsString::from($s)
+    };
+}
 
 const CONSTANTS_ARRAY: [&[u16]; 120] = [
     // Empty string
@@ -199,10 +208,15 @@ struct Inner {
     data: [u16; 0],
 }
 
+/// This represents a JavaScript primitive string.
+///
+/// This is similar to `Rc<str>`. But unlike `Rc<str>` which stores the length
+/// on the stack and a pointer to the data (this is also known as fat pointers).
+/// The `JsString` length and data is stored on the heap. and just an non-null
+/// pointer is kept, so its size is the size of a pointer.
 #[derive(Finalize)]
 pub struct JsString {
     ptr: NonNull<Inner>,
-    phantom: PhantomData<Inner>,
 }
 
 impl JsString {
@@ -210,15 +224,10 @@ impl JsString {
         unsafe { self.ptr.as_ref() }
     }
 
-    fn from_inner(ptr: NonNull<Inner>) -> Self {
-        Self {
-            ptr,
-            phantom: PhantomData,
-        }
-    }
-
     unsafe fn from_ptr(ptr: *mut Inner) -> Self {
-        Self::from_inner(unsafe { NonNull::new_unchecked(ptr) })
+        Self {
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
+        }
     }
 
     unsafe fn allocate(len: usize) -> *mut Inner {
@@ -230,7 +239,7 @@ impl JsString {
             .unwrap();
 
         unsafe {
-            let inner = std::alloc::alloc(layout) as *mut Inner;
+            let inner = std::alloc::alloc(layout).cast::<Inner>();
 
             // Write the first part, the Inner.
             inner.write(Inner {
@@ -261,16 +270,12 @@ impl JsString {
     }
 
     /// Concatenate two string.
-    pub fn concat<T, U>(x: T, y: U) -> JsString
-    where
-        T: AsRef<[u16]>,
-        U: AsRef<[u16]>,
-    {
-        Self::concat_array(&[x.as_ref(), y.as_ref()])
+    pub fn concat(x: &[u16], y: &[u16]) -> Self {
+        Self::concat_array(&[x, y])
     }
 
     /// Concatenate array of string.
-    pub fn concat_array(strings: &[&[u16]]) -> JsString {
+    pub fn concat_array(strings: &[&[u16]]) -> Self {
         let len = strings.iter().fold(0, |len, s| len + s.len());
 
         let string = unsafe {
@@ -291,6 +296,16 @@ impl JsString {
         }
 
         string
+    }
+
+    /// Decode a `JsString` into a [`String`], replacing invalid data with the replacement character (`U+FFFD`).
+    pub fn as_string_lossy(&self) -> String {
+        String::from_utf16_lossy(self)
+    }
+
+    /// Decode a `JsString` into a [`String`], returning [`Err`] if it contains any invalid data.
+    pub fn as_string(&self) -> Result<String, std::string::FromUtf16Error> {
+        String::from_utf16(self)
     }
 
     /// `6.1.4.1 StringIndexOf ( string, searchValue, fromIndex )`
@@ -335,9 +350,37 @@ impl JsString {
         None
     }
 
+    pub(crate) fn trim(&self) -> &[u16] {
+        let chars = char::decode_utf16(self.iter().copied()).collect::<Vec<_>>();
+        let left = chars
+            .iter()
+            .position(|r| {
+                !r.as_ref()
+                    .map(|&c| is_trimmable_whitespace(c))
+                    .unwrap_or_default()
+            })
+            .unwrap_or(0);
+        let right = chars
+            .iter()
+            .rposition(|r| {
+                !r.as_ref()
+                    .map(|&c| is_trimmable_whitespace(c))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_else(|| self.len());
+
+        &self[left..right]
+    }
+
+    #[allow(clippy::question_mark)]
     pub(crate) fn string_to_number(&self) -> f64 {
         // TODO: to optimize this we would need to create our own version of `trim_matches` but for utf16
-        let string = String::from_utf16_lossy(self);
+        let string = if let Ok(s) = self.as_string() {
+            s
+        } else {
+            return f64::NAN;
+        };
+
         let string = string.trim_matches(is_trimmable_whitespace);
 
         // TODO: write our own lexer to match syntax StrDecimalLiteral
@@ -349,8 +392,8 @@ impl JsString {
                 string
                     .chars()
                     .take(4)
+                    .map(|c| char::to_ascii_lowercase(&c))
                     .collect::<String>()
-                    .to_ascii_lowercase()
                     .as_str(),
                 "inf" | "+inf" | "-inf" | "nan" | "+nan" | "-nan"
             ) =>
@@ -375,27 +418,18 @@ impl Borrow<[u16]> for JsString {
     }
 }
 
-// Safety: [`JsString`] does not contain any objects which require trace,
-// so this is safe.
-unsafe impl Trace for JsString {
-    unsafe_empty_trace!();
-}
-
 impl Clone for JsString {
     #[inline]
     fn clone(&self) -> Self {
         self.inner().refcount.set(self.inner().refcount.get() + 1);
 
-        JsString {
-            ptr: self.ptr,
-            phantom: PhantomData,
-        }
+        Self { ptr: self.ptr }
     }
 }
 
 impl Default for JsString {
     fn default() -> Self {
-        Self::from(utf16!(""))
+        js_string!("")
     }
 }
 
@@ -416,91 +450,6 @@ impl Drop for JsString {
     }
 }
 
-impl Deref for JsString {
-    type Target = [u16];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.inner().data.as_ptr(), self.inner().len) }
-    }
-}
-
-impl PartialEq for JsString {
-    fn eq(&self, other: &Self) -> bool {
-        self.ptr == other.ptr || self[..] == other[..]
-    }
-}
-
-impl Eq for JsString {}
-
-impl PartialOrd for JsString {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self[..].partial_cmp(other)
-    }
-}
-
-impl Ord for JsString {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self[..].cmp(other)
-    }
-}
-
-impl PartialEq<[u16]> for JsString {
-    fn eq(&self, other: &[u16]) -> bool {
-        &**self == other
-    }
-}
-
-impl PartialEq<JsString> for [u16] {
-    fn eq(&self, other: &JsString) -> bool {
-        self == &**other
-    }
-}
-
-impl<const N: usize> PartialEq<[u16; N]> for JsString {
-    fn eq(&self, other: &[u16; N]) -> bool {
-        *self == other[..]
-    }
-}
-
-impl<const N: usize> PartialEq<JsString> for [u16; N] {
-    fn eq(&self, other: &JsString) -> bool {
-        self[..] == *other
-    }
-}
-
-impl Hash for JsString {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self[..].hash(state);
-    }
-}
-
-impl From<&[u16]> for JsString {
-    fn from(s: &[u16]) -> Self {
-        if s.len() <= MAX_CONSTANT_STRING_LENGTH {
-            if let Some(constant) = CONSTANTS.with(|c| c.get(s).cloned()) {
-                return constant;
-            }
-        }
-        Self::from_slice_skip_interning(s)
-    }
-}
-
-impl<const N: usize> From<&[u16; N]> for JsString {
-    #[inline]
-    fn from(s: &[u16; N]) -> Self {
-        JsString::from(&s[..])
-    }
-}
-
-impl<I: SliceIndex<[u16]>> Index<I> for JsString {
-    type Output = I::Output;
-
-    #[inline]
-    fn index(&self, index: I) -> &Self::Output {
-        Index::index(&**self, index)
-    }
-}
-
 impl fmt::Debug for JsString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         std::char::decode_utf16(self.as_slice().to_owned())
@@ -515,10 +464,110 @@ impl fmt::Debug for JsString {
     }
 }
 
+impl Deref for JsString {
+    type Target = [u16];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { std::slice::from_raw_parts(self.inner().data.as_ptr(), self.inner().len) }
+    }
+}
+
 impl fmt::Display for JsString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         String::from_utf16_lossy(self.as_slice()).fmt(f)
     }
+}
+
+impl Eq for JsString {}
+
+impl From<&[u16]> for JsString {
+    fn from(s: &[u16]) -> Self {
+        if s.len() <= MAX_CONSTANT_STRING_LENGTH {
+            if let Some(constant) = CONSTANTS.with(|c| c.get(s).cloned()) {
+                return constant;
+            }
+        }
+        Self::from_slice_skip_interning(s)
+    }
+}
+
+impl From<&str> for JsString {
+    #[inline]
+    fn from(s: &str) -> Self {
+        let s = s.encode_utf16().collect::<Vec<_>>();
+
+        Self::from(&s[..])
+    }
+}
+
+impl<const N: usize> From<&[u16; N]> for JsString {
+    #[inline]
+    fn from(s: &[u16; N]) -> Self {
+        Self::from(&s[..])
+    }
+}
+
+impl Hash for JsString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self[..].hash(state);
+    }
+}
+
+impl<I: SliceIndex<[u16]>> Index<I> for JsString {
+    type Output = I::Output;
+
+    #[inline]
+    fn index(&self, index: I) -> &Self::Output {
+        Index::index(&**self, index)
+    }
+}
+
+impl Ord for JsString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self[..].cmp(other)
+    }
+}
+
+impl PartialEq for JsString {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr || self[..] == other[..]
+    }
+}
+
+impl PartialEq<JsString> for [u16] {
+    fn eq(&self, other: &JsString) -> bool {
+        self == &**other
+    }
+}
+
+impl<const N: usize> PartialEq<JsString> for [u16; N] {
+    fn eq(&self, other: &JsString) -> bool {
+        self[..] == *other
+    }
+}
+
+impl PartialEq<[u16]> for JsString {
+    fn eq(&self, other: &[u16]) -> bool {
+        &**self == other
+    }
+}
+
+impl<const N: usize> PartialEq<[u16; N]> for JsString {
+    fn eq(&self, other: &[u16; N]) -> bool {
+        *self == other[..]
+    }
+}
+
+impl PartialOrd for JsString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self[..].partial_cmp(other)
+    }
+}
+
+// Safety: [`JsString`] does not contain any objects which require trace,
+// so this is safe.
+unsafe impl Trace for JsString {
+    unsafe_empty_trace!();
 }
 
 #[cfg(test)]
@@ -537,19 +586,19 @@ mod tests {
 
     #[test]
     fn empty() {
-        let s = JsString::from(utf16!(""));
+        let s = js_string!("");
         assert_eq!(*s, "".encode_utf16().collect::<Vec<u16>>())
     }
 
     #[test]
     fn pointer_size() {
-        assert_eq!(size_of::<JsString>(), size_of::<*const u8>());
-        assert_eq!(size_of::<Option<JsString>>(), size_of::<*const u8>());
+        assert_eq!(size_of::<JsString>(), size_of::<*const ()>());
+        assert_eq!(size_of::<Option<JsString>>(), size_of::<*const ()>());
     }
 
     #[test]
     fn refcount() {
-        let x = JsString::from(utf16!("Hello world"));
+        let x = js_string!("Hello world");
         assert_eq!(JsString::refcount(&x), 1);
 
         {
@@ -573,12 +622,12 @@ mod tests {
 
     #[test]
     fn ptr_eq() {
-        let x = JsString::from(utf16!("Hello"));
+        let x = js_string!("Hello");
         let y = x.clone();
 
         assert_eq!(x.ptr, y.ptr);
 
-        let z = JsString::from(utf16!("Hello"));
+        let z = js_string!("Hello");
         assert_ne!(x.ptr, z.ptr);
         assert_ne!(y.ptr, z.ptr);
     }
@@ -586,7 +635,7 @@ mod tests {
     #[test]
     fn as_str() {
         const HELLO: &str = "Hello";
-        let x = JsString::from(utf16!(HELLO));
+        let x = js_string!(HELLO);
 
         assert_eq!(*x, HELLO.encode_utf16().collect::<Vec<u16>>());
     }
@@ -597,7 +646,7 @@ mod tests {
         use std::hash::{Hash, Hasher};
 
         const HELLOWORLD: &[u16] = utf16!("Hello World!");
-        let x = JsString::from(HELLOWORLD);
+        let x = js_string!(HELLOWORLD);
 
         assert_eq!(&*x, HELLOWORLD);
 
@@ -614,20 +663,21 @@ mod tests {
 
     #[test]
     fn concat() {
-        let x = JsString::from(utf16!("hello"));
         const Y: &[u16] = utf16!(", ");
-        let z = JsString::from(utf16!("world"));
         const W: &[u16] = utf16!("!");
 
-        let xy = JsString::concat(x, Y);
+        let x = js_string!("hello");
+        let z = js_string!("world");
+
+        let xy = JsString::concat(&x, Y);
         assert_eq!(xy, *utf16!("hello, "));
         assert_eq!(JsString::refcount(&xy), 1);
 
-        let xyz = JsString::concat(xy, z);
+        let xyz = JsString::concat(&xy, &z);
         assert_eq!(xyz, *utf16!("hello, world"));
         assert_eq!(JsString::refcount(&xyz), 1);
 
-        let xyzw = JsString::concat(xyz, W);
+        let xyzw = JsString::concat(&xyz, W);
         assert_eq!(xyzw, *utf16!("hello, world!"));
         assert_eq!(JsString::refcount(&xyzw), 1);
     }
