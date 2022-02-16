@@ -77,7 +77,6 @@ pub mod object;
 pub mod property;
 pub mod realm;
 pub mod string;
-pub mod jsstring;
 pub mod symbol;
 pub mod syntax;
 pub mod value;

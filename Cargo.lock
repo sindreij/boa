@@ -96,6 +96,7 @@ dependencies = [
  "float-cmp",
  "gc",
  "indexmap",
+ "itertools",
  "jemallocator",
  "num-bigint",
  "num-integer",

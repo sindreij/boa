@@ -41,6 +41,7 @@ use crate::{
         DataView, Date, RegExp,
     },
     context::StandardConstructor,
+    js_string,
     property::{Attribute, PropertyDescriptor, PropertyKey},
     Context, JsBigInt, JsResult, JsString, JsSymbol, JsValue,
 };
@@ -1307,7 +1308,7 @@ impl<'context> FunctionBuilder<'context> {
                 function,
                 constructor: false,
             },
-            name: JsString::default(),
+            name: js_string!(),
             length: 0,
         }
     }
@@ -1325,7 +1326,7 @@ impl<'context> FunctionBuilder<'context> {
                 constructor: false,
                 captures: Captures::new(()),
             },
-            name: JsString::default(),
+            name: js_string!(),
             length: 0,
         }
     }
@@ -1359,7 +1360,7 @@ impl<'context> FunctionBuilder<'context> {
                 constructor: false,
                 captures: Captures::new(captures),
             },
-            name: JsString::default(),
+            name: js_string!(),
             length: 0,
         }
     }
@@ -1371,9 +1372,9 @@ impl<'context> FunctionBuilder<'context> {
     #[must_use]
     pub fn name<N>(mut self, name: N) -> Self
     where
-        N: AsRef<str>,
+        N: Into<JsString>,
     {
-        self.name = name.as_ref().into();
+        self.name = name.into();
         self
     }
 
@@ -1584,7 +1585,7 @@ impl<'context> ConstructorBuilder<'context> {
             constructor_object: JsObject::empty(),
             prototype: JsObject::empty(),
             length: 0,
-            name: JsString::default(),
+            name: js_string!(),
             callable: true,
             constructor: true,
             inherit: None,
@@ -1606,7 +1607,7 @@ impl<'context> ConstructorBuilder<'context> {
             constructor_has_prototype: true,
             prototype: object.prototype,
             length: 0,
-            name: JsString::default(),
+            name: js_string!(),
             callable: true,
             constructor: true,
             inherit: None,

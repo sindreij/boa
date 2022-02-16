@@ -168,8 +168,10 @@ impl Context {
                     if allow_name_reuse {
                         return Ok(());
                     }
-                    return self
-                        .throw_syntax_error(format!("Redeclaration of variable {}", name_str));
+                    return self.throw_syntax_error(format!(
+                        "Redeclaration of variable {}",
+                        name_str.as_std_string_lossy()
+                    ));
                 }
 
                 if i == 0 {
@@ -199,8 +201,10 @@ impl Context {
                         && !allow_name_reuse
                         && non_configurable_binding_exists
                     {
-                        return self
-                            .throw_syntax_error(format!("Redeclaration of variable {}", name_str));
+                        return self.throw_syntax_error(format!(
+                            "Redeclaration of variable {}",
+                            name_str.as_std_string_lossy()
+                        ));
                     }
                 }
 
@@ -262,7 +266,10 @@ impl Context {
             .expect("global environment must always exist");
 
         if env.bindings.contains_key(&name) || exists_global {
-            self.throw_syntax_error(format!("Redeclaration of variable {}", name_str))
+            self.throw_syntax_error(format!(
+                "Redeclaration of variable {}",
+                name_str.as_std_string_lossy()
+            ))
         } else {
             let binding_index = env.bindings.len();
             env.bindings.insert(

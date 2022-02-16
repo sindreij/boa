@@ -1,163 +1,179 @@
-use crate::builtins::string::is_trimmable_whitespace;
+#![warn(unsafe_op_in_unsafe_fn)]
+
+use crate::{builtins::string::is_trimmable_whitespace, JsBigInt};
 use boa_gc::{unsafe_empty_trace, Finalize, Trace};
+pub use const_utf16::encode as utf16;
 use rustc_hash::FxHashSet;
 use std::{
-    alloc::{alloc, dealloc, handle_alloc_error, Layout},
+    alloc::{alloc, dealloc, Layout},
     borrow::Borrow,
     cell::Cell,
+    fmt,
     hash::{Hash, Hasher},
-    marker::PhantomData,
-    ops::Deref,
-    ptr::{copy_nonoverlapping, NonNull},
-    rc::Rc,
+    ops::{Deref, Index},
+    ptr::{self, NonNull},
+    slice::SliceIndex,
 };
+use unicode_normalization::UnicodeNormalization;
 
-const CONSTANTS_ARRAY: [&str; 127] = [
+#[macro_export]
+macro_rules! js_string {
+    () => {
+        crate::JsString::default()
+    };
+    ($s:literal) => {
+        crate::JsString::from(crate::string::utf16!($s))
+    };
+    ($s:expr) => {
+        crate::JsString::from($s)
+    };
+    ( $x:expr, $y:expr ) => {
+        crate::JsString::concat($x, $y)
+    };
+    ( $( $s:expr ),+ ) => {
+        crate::JsString::concat_array(&[ $( $s ),+ ])
+    };
+}
+
+const CONSTANTS_ARRAY: [&[u16]; 120] = [
     // Empty string
-    "",
+    utf16!(""),
     // Misc
-    ",",
-    ":",
+    utf16!(","),
+    utf16!(":"),
     // Generic use
-    "name",
-    "length",
-    "arguments",
-    "prototype",
-    "constructor",
+    utf16!("name"),
+    utf16!("length"),
+    utf16!("arguments"),
+    utf16!("prototype"),
+    utf16!("constructor"),
     // typeof
-    "null",
-    "undefined",
-    "number",
-    "string",
-    "symbol",
-    "bigint",
-    "object",
-    "function",
+    utf16!("null"),
+    utf16!("undefined"),
+    utf16!("number"),
+    utf16!("string"),
+    utf16!("symbol"),
+    utf16!("bigint"),
+    utf16!("object"),
+    utf16!("function"),
     // Property descriptor
-    "value",
-    "get",
-    "set",
-    "writable",
-    "enumerable",
-    "configurable",
+    utf16!("value"),
+    utf16!("get"),
+    utf16!("set"),
+    utf16!("writable"),
+    utf16!("enumerable"),
+    utf16!("configurable"),
     // Object object
-    "Object",
-    "assing",
-    "create",
-    "toString",
-    "valueOf",
-    "is",
-    "seal",
-    "isSealed",
-    "freeze",
-    "isFrozen",
-    "keys",
-    "values",
-    "entries",
+    utf16!("Object"),
+    utf16!("assign"),
+    utf16!("create"),
+    utf16!("toString"),
+    utf16!("valueOf"),
+    utf16!("is"),
+    utf16!("seal"),
+    utf16!("isSealed"),
+    utf16!("freeze"),
+    utf16!("isFrozen"),
+    utf16!("keys"),
+    utf16!("values"),
+    utf16!("entries"),
     // Function object
-    "Function",
-    "apply",
-    "bind",
-    "call",
+    utf16!("Function"),
+    utf16!("apply"),
+    utf16!("bind"),
+    utf16!("call"),
     // Array object
-    "Array",
-    "from",
-    "isArray",
-    "of",
-    "get [Symbol.species]",
-    "copyWithin",
-    "entries",
-    "every",
-    "fill",
-    "filter",
-    "find",
-    "findIndex",
-    "flat",
-    "flatMap",
-    "forEach",
-    "includes",
-    "indexOf",
-    "join",
-    "map",
-    "reduce",
-    "reduceRight",
-    "reverse",
-    "shift",
-    "slice",
-    "some",
-    "sort",
-    "unshift",
-    "push",
-    "pop",
+    utf16!("Array"),
+    utf16!("from"),
+    utf16!("isArray"),
+    utf16!("of"),
+    utf16!("get [Symbol.species]"),
+    utf16!("copyWithin"),
+    utf16!("every"),
+    utf16!("fill"),
+    utf16!("filter"),
+    utf16!("find"),
+    utf16!("findIndex"),
+    utf16!("flat"),
+    utf16!("flatMap"),
+    utf16!("forEach"),
+    utf16!("includes"),
+    utf16!("indexOf"),
+    utf16!("join"),
+    utf16!("map"),
+    utf16!("reduce"),
+    utf16!("reduceRight"),
+    utf16!("reverse"),
+    utf16!("shift"),
+    utf16!("slice"),
+    utf16!("some"),
+    utf16!("sort"),
+    utf16!("unshift"),
+    utf16!("push"),
+    utf16!("pop"),
     // String object
-    "String",
-    "charAt",
-    "charCodeAt",
-    "concat",
-    "endsWith",
-    "includes",
-    "indexOf",
-    "lastIndexOf",
-    "match",
-    "matchAll",
-    "normalize",
-    "padEnd",
-    "padStart",
-    "repeat",
-    "replace",
-    "replaceAll",
-    "search",
-    "slice",
-    "split",
-    "startsWith",
-    "substring",
-    "toLowerString",
-    "toUpperString",
-    "trim",
-    "trimEnd",
-    "trimStart",
+    utf16!("String"),
+    utf16!("charAt"),
+    utf16!("charCodeAt"),
+    utf16!("concat"),
+    utf16!("endsWith"),
+    utf16!("lastIndexOf"),
+    utf16!("match"),
+    utf16!("matchAll"),
+    utf16!("normalize"),
+    utf16!("padEnd"),
+    utf16!("padStart"),
+    utf16!("repeat"),
+    utf16!("replace"),
+    utf16!("replaceAll"),
+    utf16!("search"),
+    utf16!("split"),
+    utf16!("startsWith"),
+    utf16!("substring"),
+    utf16!("toLowerString"),
+    utf16!("toUpperString"),
+    utf16!("trim"),
+    utf16!("trimEnd"),
+    utf16!("trimStart"),
     // Number object
-    "Number",
+    utf16!("Number"),
     // Boolean object
-    "Boolean",
+    utf16!("Boolean"),
     // RegExp object
-    "RegExp",
-    "exec",
-    "test",
-    "flags",
-    "index",
-    "lastIndex",
+    utf16!("RegExp"),
+    utf16!("exec"),
+    utf16!("test"),
+    utf16!("flags"),
+    utf16!("index"),
+    utf16!("lastIndex"),
     // Symbol object
-    "Symbol",
-    "for",
-    "keyFor",
-    "description",
-    "[Symbol.toPrimitive]",
-    "",
+    utf16!("Symbol"),
+    utf16!("for"),
+    utf16!("keyFor"),
+    utf16!("description"),
+    utf16!("[Symbol.toPrimitive]"),
     // Map object
-    "Map",
-    "clear",
-    "delete",
-    "get",
-    "has",
-    "set",
-    "size",
+    utf16!("Map"),
+    utf16!("clear"),
+    utf16!("delete"),
+    utf16!("has"),
+    utf16!("size"),
     // Set object
-    "Set",
+    utf16!("Set"),
     // Reflect object
-    "Reflect",
+    utf16!("Reflect"),
     // Error objects
-    "Error",
-    "TypeError",
-    "RangeError",
-    "SyntaxError",
-    "ReferenceError",
-    "EvalError",
-    "URIError",
-    "message",
+    utf16!("Error"),
+    utf16!("TypeError"),
+    utf16!("RangeError"),
+    utf16!("SyntaxError"),
+    utf16!("ReferenceError"),
+    utf16!("EvalError"),
+    utf16!("URIError"),
+    utf16!("message"),
     // Date object
-    "Date",
-    "toJSON",
+    utf16!("Date"),
+    utf16!("toJSON"),
 ];
 
 const MAX_CONSTANT_STRING_LENGTH: usize = {
@@ -173,23 +189,12 @@ const MAX_CONSTANT_STRING_LENGTH: usize = {
     max
 };
 
-unsafe fn try_alloc(layout: Layout) -> *mut u8 {
-    let ptr = alloc(layout);
-    if ptr.is_null() {
-        handle_alloc_error(layout);
-    }
-    ptr
-}
-
 thread_local! {
     static CONSTANTS: FxHashSet<JsString> = {
         let mut constants = FxHashSet::default();
 
         for s in CONSTANTS_ARRAY.iter() {
-            let s = JsString {
-                inner: Inner::new(s),
-                _marker: PhantomData,
-            };
+            let s = JsString::from_slice_skip_interning(s);
             constants.insert(s);
         }
 
@@ -197,10 +202,57 @@ thread_local! {
     };
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Normalization {
+    Nfc,
+    Nfd,
+    Nfkc,
+    Nfkd,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CodePoint {
+    Unicode(char),
+    UnpairedSurrogate(u16),
+}
+
+impl CodePoint {
+    pub(crate) fn code_unit_count(self) -> usize {
+        match self {
+            Self::Unicode(c) => c.len_utf16(),
+            Self::UnpairedSurrogate(_) => 1,
+        }
+    }
+
+    pub(crate) fn as_u32(self) -> u32 {
+        match self {
+            Self::Unicode(c) => c as u32,
+            Self::UnpairedSurrogate(surr) => u32::from(surr),
+        }
+    }
+
+    pub(crate) fn as_char(self) -> Option<char> {
+        match self {
+            Self::Unicode(c) => Some(c),
+            Self::UnpairedSurrogate(_) => None,
+        }
+    }
+
+    pub(crate) fn encode_utf16(self, dst: &mut [u16]) -> &[u16] {
+        match self {
+            CodePoint::Unicode(c) => c.encode_utf16(dst),
+            CodePoint::UnpairedSurrogate(surr) => {
+                dst[0] = surr;
+                &dst[0..=0]
+            }
+        }
+    }
+}
+
 /// The inner representation of a [`JsString`].
 #[repr(C)]
 struct Inner {
-    /// The utf8 length, the number of bytes.
+    /// The utf16 length.
     len: usize,
 
     /// The number of references to the string.
@@ -209,101 +261,7 @@ struct Inner {
     refcount: Cell<usize>,
 
     /// An empty array which is used to get the offset of string data.
-    data: [u8; 0],
-}
-
-impl Inner {
-    /// Create a new `Inner` from `&str`.
-    #[inline]
-    fn new(s: &str) -> NonNull<Self> {
-        // We get the layout of the `Inner` type and we extend by the size
-        // of the string array.
-        let inner_layout = Layout::new::<Self>();
-        let (layout, offset) = inner_layout
-            .extend(Layout::array::<u8>(s.len()).expect("failed to create memory layout"))
-            .expect("failed to extend memory layout");
-
-        let inner = unsafe {
-            let inner = try_alloc(layout).cast::<Self>();
-
-            // Write the first part, the Inner.
-            inner.write(Self {
-                len: s.len(),
-                refcount: Cell::new(1),
-                data: [0; 0],
-            });
-
-            // Get offset into the string data.
-            let data = (*inner).data.as_mut_ptr();
-
-            debug_assert!(std::ptr::eq(inner.cast::<u8>().add(offset), data));
-
-            // Copy string data into data offset.
-            copy_nonoverlapping(s.as_ptr(), data, s.len());
-
-            inner
-        };
-
-        // Safety: We already know it's not null, so this is safe.
-        unsafe { NonNull::new_unchecked(inner) }
-    }
-
-    /// Concatenate array of strings.
-    #[inline]
-    fn concat_array(strings: &[&str]) -> NonNull<Self> {
-        let mut total_string_size = 0;
-        for string in strings {
-            total_string_size += string.len();
-        }
-
-        // We get the layout of the `Inner` type and we extend by the size
-        // of the string array.
-        let inner_layout = Layout::new::<Self>();
-        let (layout, offset) = inner_layout
-            .extend(Layout::array::<u8>(total_string_size).expect("failed to create memory layout"))
-            .expect("failed to extend memory layout");
-
-        let inner = unsafe {
-            let inner = try_alloc(layout).cast::<Self>();
-
-            // Write the first part, the Inner.
-            inner.write(Self {
-                len: total_string_size,
-                refcount: Cell::new(1),
-                data: [0; 0],
-            });
-
-            // Get offset into the string data.
-            let data = (*inner).data.as_mut_ptr();
-
-            debug_assert!(std::ptr::eq(inner.cast::<u8>().add(offset), data));
-
-            // Copy the two string data into data offset.
-            let mut offset = 0;
-            for string in strings {
-                copy_nonoverlapping(string.as_ptr(), data.add(offset), string.len());
-                offset += string.len();
-            }
-
-            inner
-        };
-
-        // Safety: We already know it's not null, so this is safe.
-        unsafe { NonNull::new_unchecked(inner) }
-    }
-
-    /// Deallocate inner type with string data.
-    #[inline]
-    unsafe fn dealloc(x: NonNull<Self>) {
-        let len = (*x.as_ptr()).len;
-
-        let inner_layout = Layout::new::<Self>();
-        let (layout, _offset) = inner_layout
-            .extend(Layout::array::<u8>(len).expect("failed to create memory layout"))
-            .expect("failed to extend memory layout");
-
-        dealloc(x.as_ptr().cast::<_>(), layout);
-    }
+    data: [u16; 0],
 }
 
 /// This represents a JavaScript primitive string.
@@ -314,127 +272,121 @@ impl Inner {
 /// pointer is kept, so its size is the size of a pointer.
 #[derive(Finalize)]
 pub struct JsString {
-    inner: NonNull<Inner>,
-    _marker: PhantomData<Rc<str>>,
-}
-
-impl Default for JsString {
-    #[inline]
-    fn default() -> Self {
-        Self::new("")
-    }
+    ptr: NonNull<Inner>,
 }
 
 impl JsString {
-    /// Create an empty string, same as calling default.
-    #[inline]
-    pub fn empty() -> Self {
-        Self::default()
+    fn inner(&self) -> &Inner {
+        unsafe { self.ptr.as_ref() }
     }
 
-    /// Create a new JavaScript string.
-    #[inline]
-    pub fn new<S: AsRef<str>>(s: S) -> Self {
-        let s = s.as_ref();
-
-        if s.len() <= MAX_CONSTANT_STRING_LENGTH {
-            if let Some(constant) = CONSTANTS.with(|c| c.get(s).cloned()) {
-                return constant;
-            }
-        }
-
+    unsafe fn from_ptr(ptr: *mut Inner) -> Self {
         Self {
-            inner: Inner::new(s),
-            _marker: PhantomData,
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
         }
+    }
+
+    unsafe fn allocate(len: usize) -> *mut Inner {
+        // We get the layout of the `Inner` type and we extend by the size
+        // of the string array.
+        let (layout, offset) = Layout::array::<u16>(len)
+            .and_then(|arr| Layout::new::<Inner>().extend(arr))
+            .map(|(layout, offset)| (layout.pad_to_align(), offset))
+            .expect("failed to create memory layout");
+
+        unsafe {
+            let inner = alloc(layout).cast::<Inner>();
+
+            // Write the first part, the Inner.
+            inner.write(Inner {
+                len,
+                refcount: Cell::new(1),
+                data: [0; 0],
+            });
+
+            // Get offset into the string data.
+            let data = (*inner).data.as_mut_ptr();
+
+            debug_assert!(ptr::eq(inner.cast::<u8>().add(offset).cast(), data));
+
+            inner
+        }
+    }
+
+    fn from_slice_skip_interning(data: &[u16]) -> Self {
+        unsafe {
+            let ptr = Self::allocate(data.len());
+            ptr::copy_nonoverlapping(data.as_ptr(), (*ptr).data.as_mut_ptr(), data.len());
+            Self::from_ptr(ptr)
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u16] {
+        self
     }
 
     /// Concatenate two string.
-    pub fn concat<T, U>(x: T, y: U) -> Self
-    where
-        T: AsRef<str>,
-        U: AsRef<str>,
-    {
-        let x = x.as_ref();
-        let y = y.as_ref();
-
-        let this = Self {
-            inner: Inner::concat_array(&[x, y]),
-            _marker: PhantomData,
-        };
-
-        if this.len() <= MAX_CONSTANT_STRING_LENGTH {
-            if let Some(constant) = CONSTANTS.with(|c| c.get(&this).cloned()) {
-                return constant;
-            }
-        }
-
-        this
+    pub fn concat(x: &[u16], y: &[u16]) -> Self {
+        Self::concat_array(&[x, y])
     }
 
     /// Concatenate array of string.
-    pub fn concat_array(strings: &[&str]) -> Self {
-        let this = Self {
-            inner: Inner::concat_array(strings),
-            _marker: PhantomData,
+    pub fn concat_array(strings: &[&[u16]]) -> Self {
+        let len = strings.iter().fold(0, |len, s| len + s.len());
+
+        let string = unsafe {
+            let ptr = Self::allocate(len);
+            let data = (*ptr).data.as_mut_ptr();
+            let mut offset = 0;
+            for string in strings {
+                ptr::copy_nonoverlapping(string.as_ptr(), data.add(offset), string.len());
+                offset += string.len();
+            }
+            Self::from_ptr(ptr)
         };
 
-        if this.len() <= MAX_CONSTANT_STRING_LENGTH {
-            if let Some(constant) = CONSTANTS.with(|c| c.get(&this).cloned()) {
+        if string.len() <= MAX_CONSTANT_STRING_LENGTH {
+            if let Some(constant) = CONSTANTS.with(|c| c.get(&string).cloned()) {
                 return constant;
             }
         }
 
-        this
+        string
     }
 
-    /// Return the inner representation.
-    #[inline]
-    fn inner(&self) -> &Inner {
-        unsafe { self.inner.as_ref() }
+    /// Decode a `JsString` into a [`String`], replacing invalid data with the replacement character (`U+FFFD`).
+    pub fn as_std_string_lossy(&self) -> String {
+        String::from_utf16_lossy(self)
     }
 
-    /// Return the JavaScript string as a rust `&str`.
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        let inner = self.inner();
-
-        unsafe {
-            let slice = std::slice::from_raw_parts(inner.data.as_ptr(), inner.len);
-            std::str::from_utf8_unchecked(slice)
-        }
+    /// Decode a `JsString` into a [`String`], returning [`Err`] if it contains any invalid data.
+    pub fn as_std_string(&self) -> Result<String, std::string::FromUtf16Error> {
+        String::from_utf16(self)
     }
 
-    /// Gets the number of `JsString`s which point to this allocation.
-    #[inline]
-    pub fn refcount(this: &Self) -> usize {
-        this.inner().refcount.get()
-    }
-
-    /// Returns `true` if the two `JsString`s point to the same allocation (in a vein similar to [`ptr::eq`]).
-    ///
-    /// [`ptr::eq`]: std::ptr::eq
-    #[inline]
-    pub fn ptr_eq(x: &Self, y: &Self) -> bool {
-        x.inner == y.inner
+    pub(crate) fn to_code_points(&self) -> impl Iterator<Item = CodePoint> + '_ {
+        char::decode_utf16(self.iter().copied()).map(|res| match res {
+            Ok(c) => CodePoint::Unicode(c),
+            Err(e) => CodePoint::UnpairedSurrogate(e.unpaired_surrogate()),
+        })
     }
 
     /// `6.1.4.1 StringIndexOf ( string, searchValue, fromIndex )`
     ///
     /// Note: Instead of returning an isize with `-1` as the "not found" value,
-    /// We make use of the type system and return Option<usize> with None as the "not found" value.
+    /// we make use of the type system and return Option<usize> with None as the "not found" value.
     ///
     /// More information:
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-stringindexof
-    pub(crate) fn index_of(&self, search_value: &Self, from_index: usize) -> Option<usize> {
+    pub(crate) fn index_of(&self, search_value: &[u16], from_index: usize) -> Option<usize> {
         // 1. Assert: Type(string) is String.
         // 2. Assert: Type(searchValue) is String.
         // 3. Assert: fromIndex is a non-negative integer.
 
         // 4. Let len be the length of string.
-        let len = self.encode_utf16().count();
+        let len = self.len();
 
         // 5. If searchValue is the empty String and fromIndex ≤ len, return fromIndex.
         if search_value.is_empty() && from_index <= len {
@@ -442,25 +394,17 @@ impl JsString {
         }
 
         // 6. Let searchLen be the length of searchValue.
-        let search_len = search_value.encode_utf16().count();
+        let search_len = search_value.len();
+
+        let range = len.checked_sub(search_len)?;
 
         // 7. For each integer i starting with fromIndex such that i ≤ len - searchLen, in ascending order, do
-        for i in from_index..=len {
-            if i as isize > (len as isize - search_len as isize) {
-                break;
-            }
-
+        for i in from_index..=range {
             // a. Let candidate be the substring of string from i to i + searchLen.
-            let candidate = String::from_utf16_lossy(
-                &self
-                    .encode_utf16()
-                    .skip(i)
-                    .take(search_len)
-                    .collect::<Vec<u16>>(),
-            );
+            let candidate = &self[i..i + search_len];
 
             // b. If candidate is the same sequence of code units as searchValue, return i.
-            if candidate == search_value.as_str() {
+            if candidate == search_value {
                 return Some(i);
             }
         }
@@ -469,9 +413,57 @@ impl JsString {
         None
     }
 
-    pub(crate) fn string_to_number(&self) -> f64 {
-        let string = self.trim_matches(is_trimmable_whitespace);
+    /// Abstract operation `CodePointAt( string, position )`.
+    ///
+    /// The abstract operation `CodePointAt` interprets `string` as a sequence of
+    /// `UTF-16` encoded code points and reads from it a single code point starting
+    /// with the code unit at index `position`.
+    ///
+    /// More information:
+    ///  - [ECMAScript reference][spec]
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-codepointat
+    pub(crate) fn code_point_at(&self, position: usize) -> CodePoint {
+        // 1. Let size be the length of string.
+        let size = self.len();
 
+        // 2. Assert: position ≥ 0 and position < size.
+        // position >= 0 ensured by position: usize
+        assert!(position < size);
+
+        // 3. Let first be the code unit at index position within string.
+        // 4. Let cp be the code point whose numeric value is that of first.
+        // 5. If first is not a leading surrogate or trailing surrogate, then
+        // a. Return the Record { [[CodePoint]]: cp, [[CodeUnitCount]]: 1, [[IsUnpairedSurrogate]]: false }.
+        // 6. If first is a trailing surrogate or position + 1 = size, then
+        // a. Return the Record { [[CodePoint]]: cp, [[CodeUnitCount]]: 1, [[IsUnpairedSurrogate]]: true }.
+        // 7. Let second be the code unit at index position + 1 within string.
+        // 8. If second is not a trailing surrogate, then
+        // a. Return the Record { [[CodePoint]]: cp, [[CodeUnitCount]]: 1, [[IsUnpairedSurrogate]]: true }.
+        // 9. Set cp to ! UTF16SurrogatePairToCodePoint(first, second).
+
+        // We can skip the checks and instead use the `char::decode_utf16` function to take care of that for us.
+        let code_point = self
+            .get(position..=position + 1)
+            .unwrap_or(&self[position..=position]);
+
+        match char::decode_utf16(code_point.iter().copied())
+            .next()
+            .expect("code_point always has a value")
+        {
+            Ok(c) => CodePoint::Unicode(c),
+            Err(e) => CodePoint::UnpairedSurrogate(e.unpaired_surrogate()),
+        }
+    }
+
+    #[allow(clippy::question_mark)]
+    pub(crate) fn to_number(&self) -> f64 {
+        let string = if let Ok(string) = self.as_std_string() {
+            string
+        } else {
+            return f64::NAN;
+        };
+        let string = string.trim_matches(is_trimmable_whitespace);
         // TODO: write our own lexer to match syntax StrDecimalLiteral
         match string {
             "" => 0.0,
@@ -481,8 +473,8 @@ impl JsString {
                 string
                     .chars()
                     .take(4)
+                    .map(|c| char::to_ascii_lowercase(&c))
                     .collect::<String>()
-                    .to_ascii_lowercase()
                     .as_str(),
                 "inf" | "+inf" | "-inf" | "nan" | "+nan" | "-nan"
             ) =>
@@ -493,183 +485,293 @@ impl JsString {
             _ => fast_float::parse(string).unwrap_or(f64::NAN),
         }
     }
+
+    pub(crate) fn to_big_int(&self) -> Option<JsBigInt> {
+        JsBigInt::from_string(self.as_std_string().ok().as_ref()?)
+    }
+
+    pub(crate) fn normalize(&self, normalization: Normalization) -> Self {
+        let mut code_points = self.to_code_points();
+        let mut result = Vec::with_capacity(self.len());
+
+        let mut next_unpaired_surrogate = None;
+        let mut buf = [0; 2];
+
+        loop {
+            let only_chars = code_points.by_ref().map_while(|cpoint| match cpoint {
+                CodePoint::Unicode(c) => Some(c),
+                CodePoint::UnpairedSurrogate(s) => {
+                    next_unpaired_surrogate = Some(s);
+                    None
+                }
+            });
+
+            match normalization {
+                Normalization::Nfc => {
+                    for mapped in only_chars.nfc() {
+                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
+                    }
+                }
+                Normalization::Nfd => {
+                    for mapped in only_chars.nfd() {
+                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
+                    }
+                }
+                Normalization::Nfkc => {
+                    for mapped in only_chars.nfkc() {
+                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
+                    }
+                }
+                Normalization::Nfkd => {
+                    for mapped in only_chars.nfkd() {
+                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
+                    }
+                }
+            }
+
+            if let Some(surr) = next_unpaired_surrogate.take() {
+                result.push(surr);
+            } else {
+                break;
+            }
+        }
+
+        js_string!(&result[..])
+    }
 }
 
-// Safety: [`JsString`] does not contain any objects which recquire trace,
-// so this is safe.
-unsafe impl Trace for JsString {
-    unsafe_empty_trace!();
+impl AsRef<[u16]> for JsString {
+    fn as_ref(&self) -> &[u16] {
+        self
+    }
+}
+
+impl Borrow<[u16]> for JsString {
+    fn borrow(&self) -> &[u16] {
+        self
+    }
 }
 
 impl Clone for JsString {
     #[inline]
     fn clone(&self) -> Self {
-        let inner = self.inner();
-        inner.refcount.set(inner.refcount.get() + 1);
+        self.inner().refcount.set(self.inner().refcount.get() + 1);
 
-        Self {
-            inner: self.inner,
-            _marker: PhantomData,
-        }
+        Self { ptr: self.ptr }
+    }
+}
+
+impl Default for JsString {
+    fn default() -> Self {
+        Self::from(utf16!(""))
     }
 }
 
 impl Drop for JsString {
     #[inline]
     fn drop(&mut self) {
-        let inner = self.inner();
-        if inner.refcount.get() == 1 {
-            // Safety: If refcount is 1 and we call drop, that means this is the last
+        self.inner().refcount.set(self.inner().refcount.get() - 1);
+        if self.inner().refcount.get() == 0 {
+            // Safety: If refcount is 0 and we call drop, that means this is the last
             // JsString which points to this memory allocation, so deallocating it is safe.
             unsafe {
-                Inner::dealloc(self.inner);
+                ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+                    &mut (*self.ptr.as_ptr()).data,
+                    self.inner().len,
+                ));
+                dealloc(
+                    self.ptr.as_ptr().cast(),
+                    Layout::for_value(self.ptr.as_ref()),
+                );
             }
-        } else {
-            inner.refcount.set(inner.refcount.get() - 1);
         }
     }
 }
 
-impl std::fmt::Debug for JsString {
-    #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_str().fmt(f)
+impl fmt::Debug for JsString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        std::char::decode_utf16(self.as_slice().to_owned())
+            .map(|r| {
+                r.map_or_else(
+                    |err| format!("<0x{:04x}>", err.unpaired_surrogate()),
+                    String::from,
+                )
+            })
+            .collect::<String>()
+            .fmt(f)
     }
 }
 
-impl std::fmt::Display for JsString {
-    #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_str().fmt(f)
+impl Deref for JsString {
+    type Target = [u16];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { std::slice::from_raw_parts(self.inner().data.as_ptr(), self.inner().len) }
+    }
+}
+
+impl Eq for JsString {}
+
+impl From<&[u16]> for JsString {
+    fn from(s: &[u16]) -> Self {
+        if s.len() <= MAX_CONSTANT_STRING_LENGTH {
+            if let Some(constant) = CONSTANTS.with(|c| c.get(s).cloned()) {
+                return constant;
+            }
+        }
+        Self::from_slice_skip_interning(s)
     }
 }
 
 impl From<&str> for JsString {
     #[inline]
     fn from(s: &str) -> Self {
-        Self::new(s)
-    }
-}
+        let s = s.encode_utf16().collect::<Vec<_>>();
 
-impl From<Box<str>> for JsString {
-    #[inline]
-    fn from(s: Box<str>) -> Self {
-        Self::new(s)
+        Self::from(&s[..])
     }
 }
 
 impl From<String> for JsString {
     #[inline]
     fn from(s: String) -> Self {
-        Self::new(s)
+        Self::from(s.as_str())
     }
 }
 
-impl AsRef<str> for JsString {
+impl<const N: usize> From<&[u16; N]> for JsString {
     #[inline]
-    fn as_ref(&self) -> &str {
-        self.as_str()
+    fn from(s: &[u16; N]) -> Self {
+        Self::from(&s[..])
     }
 }
-
-impl Borrow<str> for JsString {
-    #[inline]
-    fn borrow(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl Deref for JsString {
-    type Target = str;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
-    }
-}
-
-impl PartialEq<Self> for JsString {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        // If they point at the same memory allocation, then they are equal.
-        if Self::ptr_eq(self, other) {
-            return true;
-        }
-
-        self.as_str() == other.as_str()
-    }
-}
-
-impl Eq for JsString {}
 
 impl Hash for JsString {
-    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_str().hash(state);
+        self[..].hash(state);
     }
 }
 
-impl PartialOrd for JsString {
+impl<I: SliceIndex<[u16]>> Index<I> for JsString {
+    type Output = I::Output;
+
     #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.as_str().partial_cmp(other.as_str())
+    fn index(&self, index: I) -> &Self::Output {
+        Index::index(&**self, index)
     }
 }
 
 impl Ord for JsString {
-    #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_str().cmp(other)
+        self[..].cmp(other)
     }
 }
 
-impl PartialEq<str> for JsString {
-    #[inline]
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
+impl PartialEq for JsString {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr || self[..] == other[..]
     }
 }
 
-impl PartialEq<JsString> for str {
-    #[inline]
+impl PartialEq<JsString> for [u16] {
     fn eq(&self, other: &JsString) -> bool {
-        self == other.as_str()
+        self == &**other
     }
 }
 
-impl PartialEq<&str> for JsString {
-    #[inline]
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<JsString> for &str {
-    #[inline]
+impl<const N: usize> PartialEq<JsString> for [u16; N] {
     fn eq(&self, other: &JsString) -> bool {
-        *self == other.as_str()
+        self[..] == *other
+    }
+}
+
+impl PartialEq<[u16]> for JsString {
+    fn eq(&self, other: &[u16]) -> bool {
+        &**self == other
+    }
+}
+
+impl<const N: usize> PartialEq<[u16; N]> for JsString {
+    fn eq(&self, other: &[u16; N]) -> bool {
+        *self == other[..]
+    }
+}
+
+impl PartialOrd for JsString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self[..].partial_cmp(other)
+    }
+}
+
+// Safety: [`JsString`] does not contain any objects which require trace,
+// so this is safe.
+unsafe impl Trace for JsString {
+    unsafe_empty_trace!();
+}
+
+pub(crate) trait Utf16Trim {
+    fn trim(&self) -> &Self {
+        self.trim_start().trim_end()
+    }
+    fn trim_start(&self) -> &Self;
+
+    fn trim_end(&self) -> &Self;
+}
+
+impl Utf16Trim for [u16] {
+    fn trim_start(&self) -> &Self {
+        if let Some(left) = self.iter().copied().position(|r| {
+            !char::from_u32(u32::from(r))
+                .map(is_trimmable_whitespace)
+                .unwrap_or_default()
+        }) {
+            &self[left..]
+        } else {
+            &[]
+        }
+    }
+    fn trim_end(&self) -> &Self {
+        if let Some(right) = self.iter().copied().rposition(|r| {
+            !char::from_u32(u32::from(r))
+                .map(is_trimmable_whitespace)
+                .unwrap_or_default()
+        }) {
+            &self[..=right]
+        } else {
+            &[]
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::JsString;
+    use const_utf16::encode as utf16;
     use std::mem::size_of;
+
+    impl JsString {
+        /// Gets the number of `JsString`s which point to this allocation.
+        #[inline]
+        fn refcount(&self) -> usize {
+            self.inner().refcount.get()
+        }
+    }
 
     #[test]
     fn empty() {
-        let _empty = JsString::new("");
+        let s = js_string!();
+        assert_eq!(*s, "".encode_utf16().collect::<Vec<u16>>());
     }
 
     #[test]
     fn pointer_size() {
-        assert_eq!(size_of::<JsString>(), size_of::<*const u8>());
-        assert_eq!(size_of::<Option<JsString>>(), size_of::<*const u8>());
+        assert_eq!(size_of::<JsString>(), size_of::<*const ()>());
+        assert_eq!(size_of::<Option<JsString>>(), size_of::<*const ()>());
     }
 
     #[test]
     fn refcount() {
-        let x = JsString::new("Hello wrold");
+        let x = js_string!("Hello world");
         assert_eq!(JsString::refcount(&x), 1);
 
         {
@@ -693,22 +795,22 @@ mod tests {
 
     #[test]
     fn ptr_eq() {
-        let x = JsString::new("Hello");
+        let x = js_string!("Hello");
         let y = x.clone();
 
-        assert!(JsString::ptr_eq(&x, &y));
+        assert_eq!(x.ptr, y.ptr);
 
-        let z = JsString::new("Hello");
-        assert!(!JsString::ptr_eq(&x, &z));
-        assert!(!JsString::ptr_eq(&y, &z));
+        let z = js_string!("Hello");
+        assert_ne!(x.ptr, z.ptr);
+        assert_ne!(y.ptr, z.ptr);
     }
 
     #[test]
     fn as_str() {
-        let s = "Hello";
-        let x = JsString::new(s);
+        const HELLO: &str = "Hello";
+        let x = js_string!(HELLO);
 
-        assert_eq!(x.as_str(), s);
+        assert_eq!(*x, HELLO.encode_utf16().collect::<Vec<u16>>());
     }
 
     #[test]
@@ -716,14 +818,15 @@ mod tests {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        let s = "Hello, world!";
-        let x = JsString::new(s);
+        const HELLOWORLD: &[u16] = utf16!("Hello World!");
+        let x = js_string!(HELLOWORLD);
 
-        assert_eq!(x.as_str(), s);
+        assert_eq!(&*x, HELLOWORLD);
 
         let mut hasher = DefaultHasher::new();
-        s.hash(&mut hasher);
+        HELLOWORLD.hash(&mut hasher);
         let s_hash = hasher.finish();
+
         let mut hasher = DefaultHasher::new();
         x.hash(&mut hasher);
         let x_hash = hasher.finish();
@@ -733,21 +836,22 @@ mod tests {
 
     #[test]
     fn concat() {
-        let x = JsString::new("hello");
-        let y = ", ";
-        let z = JsString::new("world");
-        let w = String::from("!");
+        const Y: &[u16] = utf16!(", ");
+        const W: &[u16] = utf16!("!");
 
-        let xy = JsString::concat(x, y);
-        assert_eq!(xy, "hello, ");
+        let x = js_string!("hello");
+        let z = js_string!("world");
+
+        let xy = js_string!(&x, Y);
+        assert_eq!(xy, *utf16!("hello, "));
         assert_eq!(JsString::refcount(&xy), 1);
 
-        let xyz = JsString::concat(xy, z);
-        assert_eq!(xyz, "hello, world");
+        let xyz = js_string!(&xy, &z);
+        assert_eq!(xyz, *utf16!("hello, world"));
         assert_eq!(JsString::refcount(&xyz), 1);
 
-        let xyzw = JsString::concat(xyz, w);
-        assert_eq!(xyzw, "hello, world!");
+        let xyzw = js_string!(&xyz, W);
+        assert_eq!(xyzw, *utf16!("hello, world!"));
         assert_eq!(JsString::refcount(&xyzw), 1);
     }
 }

@@ -46,8 +46,8 @@ impl BuiltIn for Intl {
 }
 
 impl Intl {
-    fn canonicalize_locale(locale: &str) -> JsString {
-        JsString::new(locale)
+    fn canonicalize_locale(locale: JsString) -> JsString {
+        locale
     }
 
     fn canonicalize_locale_list(
@@ -105,7 +105,7 @@ impl Intl {
                 // TODO: implement `IsStructurallyValidLanguageTag`
 
                 // vi. Let canonicalizedTag be CanonicalizeUnicodeLocaleId(tag).
-                seen.insert(Self::canonicalize_locale(&tag));
+                seen.insert(Self::canonicalize_locale(tag));
                 // vii. If canonicalizedTag is not an element of seen, append canonicalizedTag as the last element of seen.
             }
             // d. Increase k by 1.

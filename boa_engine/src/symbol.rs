@@ -15,11 +15,10 @@
 //! [spec]: https://tc39.es/ecma262/#sec-symbol-value
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol
 
-use crate::JsString;
+use crate::{js_string, string::utf16, JsString};
 use boa_gc::{unsafe_empty_trace, Finalize, Trace};
 use std::{
     cell::Cell,
-    fmt::{self, Display},
     hash::{Hash, Hasher},
     rc::Rc,
 };
@@ -289,6 +288,19 @@ impl JsSymbol {
     pub fn hash(&self) -> u64 {
         self.inner.hash
     }
+
+    /// Abstract operation `SymbolDescriptiveString ( sym )`
+    ///
+    /// More info:
+    /// - [ECMAScript reference][spec]
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-symboldescriptivestring
+    pub fn descriptive_string(&self) -> JsString {
+        match &self.inner.description {
+            Some(desc) => js_string!(utf16!("Symbol("), desc, utf16!(")")),
+            None => js_string!("Symbol()"),
+        }
+    }
 }
 
 impl Finalize for JsSymbol {}
@@ -297,16 +309,6 @@ impl Finalize for JsSymbol {}
 // so this is safe.
 unsafe impl Trace for JsSymbol {
     unsafe_empty_trace!();
-}
-
-impl Display for JsSymbol {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.inner.description {
-            Some(desc) => write!(f, "Symbol({desc})"),
-            None => write!(f, "Symbol()"),
-        }
-    }
 }
 
 impl Eq for JsSymbol {}

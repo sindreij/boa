@@ -276,7 +276,7 @@ impl Context {
                 if !rhs.is_object() {
                     return self.throw_type_error(format!(
                         "right-hand side of 'in' should be an object, got {}",
-                        rhs.type_of()
+                        rhs.type_of().as_std_string_lossy()
                     ));
                 }
                 let key = lhs.to_property_key(self)?;
@@ -427,10 +427,18 @@ impl Context {
                                 self.call(&get, &self.global_object().clone().into(), &[])?
                             }
                             _ => {
-                                return self.throw_reference_error(format!("{key} is not defined"))
+                                return self.throw_reference_error(format!(
+                                    "{} is not defined",
+                                    key.as_std_string_lossy()
+                                ))
                             }
                         },
-                        _ => return self.throw_reference_error(format!("{key} is not defined")),
+                        _ => {
+                            return self.throw_reference_error(format!(
+                                "{} is not defined",
+                                key.as_std_string_lossy()
+                            ))
+                        }
                     }
                 } else if let Some(value) = self.realm.environments.get_value_optional(
                     binding_locator.environment_index(),
@@ -440,7 +448,10 @@ impl Context {
                 } else {
                     let name =
                         JsString::from(self.interner().resolve_expect(binding_locator.name()));
-                    return self.throw_reference_error(format!("{name} is not initialized"));
+                    return self.throw_reference_error(format!(
+                        "{} is not initialized",
+                        name.as_std_string_lossy()
+                    ));
                 };
 
                 self.vm.push(value);
@@ -495,7 +506,8 @@ impl Context {
 
                     if !exists && (self.strict() || self.vm.frame().code.strict) {
                         return self.throw_reference_error(format!(
-                            "assignment to undeclared variable {key}"
+                            "assignment to undeclared variable {}",
+                            key.as_std_string_lossy()
                         ));
                     }
 
@@ -506,8 +518,10 @@ impl Context {
                     )?;
 
                     if !success && (self.strict() || self.vm.frame().code.strict) {
-                        return self
-                            .throw_type_error(format!("cannot set non-writable property: {key}",));
+                        return self.throw_type_error(format!(
+                            "cannot set non-writable property: {}",
+                            key.as_std_string_lossy()
+                        ));
                     }
                 } else if !self.realm.environments.put_value_if_initialized(
                     binding_locator.environment_index(),
@@ -1248,7 +1262,10 @@ impl Context {
                 }
                 strings.reverse();
                 let s = JsString::concat_array(
-                    &strings.iter().map(JsString::as_str).collect::<Vec<&str>>(),
+                    &strings
+                        .iter()
+                        .map(JsString::as_slice)
+                        .collect::<Vec<&[u16]>>(),
                 );
                 self.vm.push(s);
             }
