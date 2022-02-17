@@ -605,20 +605,31 @@ impl String {
         // 2. Let S be ? ToString(O).
         let string = this.to_string(context)?;
 
+        let len = string.len();
+
         // 3. Let n be ? ToIntegerOrInfinity(count).
         match args.get_or_undefined(0).to_integer_or_infinity(context)? {
             IntegerOrInfinity::Integer(n)
-                if n > 0 && (n as usize) * string.len() <= Self::MAX_STRING_LENGTH =>
+                if n > 0 && (n as usize) * len <= Self::MAX_STRING_LENGTH =>
             {
+                if string.is_empty() {
+                    return Ok(js_string!().into());
+                }
+                let n = n as usize;
+                let mut result = Vec::with_capacity(n * len);
+
+                std::iter::repeat(&string[..])
+                    .take(n)
+                    .for_each(|s| result.extend_from_slice(s));
+
                 // 6. Return the String value that is made from n copies of S appended together.
-                let strs = vec![&string[..]; n as usize];
-                Ok(JsString::concat_array(&strs[..]).into())
+                Ok(js_string!(&result[..]).into())
             }
             // 5. If n is 0, return the empty String.
             IntegerOrInfinity::Integer(n) if n == 0 => Ok(js_string!().into()),
             // 4. If n < 0 or n is +∞, throw a RangeError exception.
             _ => context.throw_range_error(
-                "repeat count must be a positive finite number\
+                "repeat count must be a positive finite number \
                         that doesn't overflow the maximum string length",
             ),
         }
@@ -941,7 +952,7 @@ impl String {
         };
 
         // 10. Let preserved be the substring of string from 0 to position.
-        let preserved = &this_str[0..position];
+        let preserved = &this_str[..position];
 
         // 11. If functionalReplace is true, then
         // 12. Else,
@@ -972,7 +983,12 @@ impl String {
         };
 
         // 13. Return the string-concatenation of preserved, replacement, and the substring of string from position + searchLength.
-        Ok(js_string!(preserved, &replacement, &this_str[position..search_length]).into())
+        Ok(js_string!(
+            preserved,
+            &replacement,
+            &this_str[position + search_length..]
+        )
+        .into())
     }
 
     /// `22.1.3.18 String.prototype.replaceAll ( searchValue, replaceValue )`
@@ -1213,7 +1229,9 @@ impl String {
         let pos = if num_pos.is_nan() {
             IntegerOrInfinity::PositiveInfinity
         } else {
-            JsValue::new(num_pos).to_integer_or_infinity(context)?
+            JsValue::new(num_pos)
+                .to_integer_or_infinity(context)
+                .expect("Already called `to_number so this must not fail.")
         };
 
         // 7. Let len be the length of S.
@@ -1231,7 +1249,7 @@ impl String {
 
         if let Some(end) = len.checked_sub(search_len) {
             // 11. For each non-negative integer i starting with start such that i ≤ len - searchLen, in descending order, do
-            for i in (start..=end).rev() {
+            for i in (0..=min(start, end)).rev() {
                 // a. Let candidate be the substring of S from i to i + searchLen.
                 let candidate = &string[i..i + search_len];
 
@@ -1751,8 +1769,7 @@ impl String {
                 .get(..lim)
                 .unwrap_or(&this_str[..])
                 .iter()
-                .copied()
-                .map(|code| (u32::from(code)).into());
+                .map(|code| js_string!(std::slice::from_ref(code)).into());
             // c. Return ! CreateArrayFromList(codeUnits).
             return Ok(Array::create_array_from_list(head, context).into());
         }

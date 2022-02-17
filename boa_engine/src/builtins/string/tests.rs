@@ -147,7 +147,8 @@ fn repeat_throws_when_count_is_negative() {
         }
     "#
         ),
-        "\"RangeError: repeat count cannot be a negative number\""
+        "\"RangeError: repeat count must be a positive finite number \
+        that doesn't overflow the maximum string length\""
     );
 }
 
@@ -166,7 +167,8 @@ fn repeat_throws_when_count_is_infinity() {
         }
     "#
         ),
-        "\"RangeError: repeat count cannot be infinity\""
+        "\"RangeError: repeat count must be a positive finite number \
+        that doesn't overflow the maximum string length\""
     );
 }
 
@@ -185,7 +187,8 @@ fn repeat_throws_when_count_overflows_max_length() {
         }
     "#
         ),
-        "\"RangeError: repeat count must not overflow maximum string length\""
+        "\"RangeError: repeat count must be a positive finite number \
+        that doesn't overflow the maximum string length\""
     );
 }
 
@@ -678,13 +681,14 @@ fn split() {
         forward(&mut context, "['']")
     );
 
-    // TODO: Support keeping invalid code point in string
     assert_eq!(
         forward(
             &mut context,
             "\'\u{1d7d8}\u{1d7d9}\u{1d7da}\u{1d7db}\'.split(\'\')"
         ),
-        forward(&mut context, "['�','�','�','�','�','�','�','�']")
+        // TODO: modify interner to store UTF-16 surrogates from string literals
+        // forward(&mut context, "['�','�','�','�','�','�','�','�']")
+        "[ \"\\uD835\", \"\\uDFD8\", \"\\uD835\", \"\\uDFD9\", \"\\uD835\", \"\\uDFDA\", \"\\uD835\", \"\\uDFDB\" ]"
     );
 }
 
@@ -1135,7 +1139,7 @@ fn string_get_property() {
     assert_eq!(forward(&mut context, "'abc'[2]"), "\"c\"");
     assert_eq!(forward(&mut context, "'abc'[3]"), "undefined");
     assert_eq!(forward(&mut context, "'abc'['foo']"), "undefined");
-    assert_eq!(forward(&mut context, "'😀'[0]"), "\"�\"");
+    assert_eq!(forward(&mut context, "'😀'[0]"), "\"\\uD83D\"");
 }
 
 #[test]

@@ -354,9 +354,17 @@ impl JsString {
         string
     }
 
-    /// Decode a `JsString` into a [`String`], replacing invalid data with the replacement character (`U+FFFD`).
+    /// Decode a `JsString` into a [`String`], replacing invalid data with
+    /// its escaped representation in 4 digit hexadecimal.
     pub fn as_std_string_lossy(&self) -> String {
-        String::from_utf16_lossy(self)
+        let mut result = String::new();
+        for code_point in self.to_code_points() {
+            match code_point {
+                CodePoint::Unicode(c) => result.push(c),
+                CodePoint::UnpairedSurrogate(surr) => result.push_str(&format!("\\u{surr:04X}")),
+            }
+        }
+        result
     }
 
     /// Decode a `JsString` into a [`String`], returning [`Err`] if it contains any invalid data.
