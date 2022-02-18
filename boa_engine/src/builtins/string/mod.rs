@@ -1513,21 +1513,32 @@ impl String {
         // 2. Let S be ? ToString(O).
         let string = this.to_string(context)?;
 
-        let mut buf = [0; 2];
-
+        let mut code_points = string.to_code_points();
         let mut lower_text = Vec::with_capacity(string.len());
+        let mut next_unpaired_surrogate = None;
 
         // 3. Let sText be ! StringToCodePoints(S).
         // 4. Let lowerText be the result of toLowercase(sText), according to
         // the Unicode Default Case Conversion algorithm.
-        for code_point in string.to_code_points() {
-            match code_point {
-                CodePoint::Unicode(uni) => {
-                    for c in uni.to_lowercase() {
-                        lower_text.extend_from_slice(c.encode_utf16(&mut buf));
+        loop {
+            let only_chars = code_points
+                .by_ref()
+                .map_while(|cpoint| match cpoint {
+                    CodePoint::Unicode(c) => Some(c),
+                    CodePoint::UnpairedSurrogate(s) => {
+                        next_unpaired_surrogate = Some(s);
+                        None
                     }
-                }
-                CodePoint::UnpairedSurrogate(surr) => lower_text.push(surr),
+                })
+                .collect::<std::string::String>()
+                .to_lowercase();
+
+            lower_text.extend(only_chars.encode_utf16());
+
+            if let Some(surr) = next_unpaired_surrogate.take() {
+                lower_text.push(surr);
+            } else {
+                break;
             }
         }
 
@@ -1565,21 +1576,32 @@ impl String {
         // 2. Let S be ? ToString(O).
         let string = this.to_string(context)?;
 
-        let mut buf = [0; 2];
-
+        let mut code_points = string.to_code_points();
         let mut upper_text = Vec::with_capacity(string.len());
+        let mut next_unpaired_surrogate = None;
 
         // 3. Let sText be ! StringToCodePoints(S).
         // 4. Let upperText be the result of toUppercase(sText), according to
         // the Unicode Default Case Conversion algorithm.
-        for code_point in string.to_code_points() {
-            match code_point {
-                CodePoint::Unicode(uni) => {
-                    for c in uni.to_uppercase() {
-                        upper_text.extend_from_slice(c.encode_utf16(&mut buf));
+        loop {
+            let only_chars = code_points
+                .by_ref()
+                .map_while(|cpoint| match cpoint {
+                    CodePoint::Unicode(c) => Some(c),
+                    CodePoint::UnpairedSurrogate(s) => {
+                        next_unpaired_surrogate = Some(s);
+                        None
                     }
-                }
-                CodePoint::UnpairedSurrogate(surr) => upper_text.push(surr),
+                })
+                .collect::<std::string::String>()
+                .to_uppercase();
+
+            upper_text.extend(only_chars.encode_utf16());
+
+            if let Some(surr) = next_unpaired_surrogate.take() {
+                upper_text.push(surr);
+            } else {
+                break;
             }
         }
 

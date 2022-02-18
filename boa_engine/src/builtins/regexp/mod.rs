@@ -25,7 +25,7 @@ use crate::{
     string::{utf16, CodePoint},
     symbol::WellKnownSymbols,
     syntax::lexer::regex::RegExpFlags,
-    value::{IntegerOrInfinity, JsValue},
+    value::JsValue,
     Context, JsResult, JsString,
 };
 use boa_gc::{unsafe_empty_trace, Finalize, Trace};
@@ -867,9 +867,11 @@ impl RegExp {
 
         // 13. Let e be r's endIndex value.
         let mut e = match_value.end();
+        let lossy_input = input.as_std_string_lossy();
 
         // 14. If fullUnicode is true, then
-        if unicode {
+        // TODO: disabled for now until we have UTF-16 support
+        if false {
             // e is an index into the Input character list, derived from S, matched by matcher.
             // Let eUTF be the smallest index into S that corresponds to the character at element e of Input.
             // If e is greater than or equal to the number of elements in Input, then eUTF is the number of code units in S.
@@ -880,7 +882,12 @@ impl RegExp {
         // 15. If global is true or sticky is true, then
         if global || sticky {
             // a. Perform ? Set(R, "lastIndex", 𝔽(e), true).
-            this.set("lastIndex", e, true, context)?;
+            this.set(
+                "lastIndex",
+                (&lossy_input[..e]).encode_utf16().count(),
+                true,
+                context,
+            )?;
         }
 
         // 16. Let n be the number of elements in r's captures List. (This is the same value as 22.2.2.1's NcapturingParens.)
@@ -901,11 +908,7 @@ impl RegExp {
             .expect("this CreateDataPropertyOrThrow call must not fail");
 
         // 22. Let matchedSubstr be the substring of S from lastIndex to e.
-        let matched_substr = if let Some(s) = input.get(match_value.range()) {
-            js_string!(s)
-        } else {
-            js_string!()
-        };
+        let matched_substr = js_string!(&lossy_input[last_index..e]);
 
         // 23. Perform ! CreateDataPropertyOrThrow(A, "0", matchedSubstr).
         a.create_data_property_or_throw(0, matched_substr, context)
@@ -916,7 +919,7 @@ impl RegExp {
         let named_groups = match_value.named_groups();
         let groups = if named_groups.clone().count() > 0 {
             // a. Let groups be ! OrdinaryObjectCreate(null).
-            let groups = JsValue::from(JsObject::empty());
+            let groups = JsObject::empty();
 
             // Perform 27.f here
             // f. If the ith capture of R was defined with a GroupName, then
@@ -924,19 +927,15 @@ impl RegExp {
             // ii. Perform ! CreateDataPropertyOrThrow(groups, s, capturedValue).
             for (name, range) in named_groups {
                 if let Some(range) = range {
-                    let value = if let Some(s) = input.get(range.clone()) {
-                        js_string!(s)
-                    } else {
-                        js_string!()
-                    };
+                    // TODO: Full UTF-16 regex support
+                    let value = js_string!(&lossy_input[range.clone()]);
 
                     groups
-                        .to_object(context)?
                         .create_data_property_or_throw(name, value, context)
                         .expect("this CreateDataPropertyOrThrow call must not fail");
                 }
             }
-            groups
+            groups.into()
         } else {
             // a. Let groups be undefined.
             JsValue::undefined()
@@ -956,13 +955,8 @@ impl RegExp {
                 None => JsValue::undefined(),
                 // c. Else if fullUnicode is true, then
                 // d. Else,
-                Some(range) => {
-                    if let Some(s) = input.get(range) {
-                        s.into()
-                    } else {
-                        "".into()
-                    }
-                }
+                // TODO: Full UTF-16 regex support
+                Some(range) => js_string!(&lossy_input[range]).into(),
             };
 
             // e. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(i)), capturedValue).
@@ -999,11 +993,7 @@ impl RegExp {
         };
 
         // 3. Let S be ? ToString(string).
-        let arg_str = args
-            .get(0)
-            .cloned()
-            .unwrap_or_default()
-            .to_string(context)?;
+        let arg_str = args.get_or_undefined(0).to_string(context)?;
 
         // 4. Let global be ! ToBoolean(? Get(rx, "global")).
         let global = rx.get("global", context)?.to_boolean();
@@ -1275,7 +1265,7 @@ impl RegExp {
         }
 
         // 12. Let accumulatedResult be the empty String.
-        let mut accumulated_result = js_string!();
+        let mut accumulated_result = vec![];
 
         // 13. Let nextSourcePosition be 0.
         let mut next_source_position = 0;
@@ -1301,19 +1291,7 @@ impl RegExp {
 
             // f. Set position to the result of clamping position between 0 and lengthS.
             //position = position.
-            let position = match position {
-                IntegerOrInfinity::Integer(i) => {
-                    if i < 0 {
-                        0
-                    } else if i as usize > length_arg_str {
-                        length_arg_str
-                    } else {
-                        i as usize
-                    }
-                }
-                IntegerOrInfinity::PositiveInfinity => length_arg_str,
-                IntegerOrInfinity::NegativeInfinity => 0,
-            };
+            let position = position.clamp_finite(0, length_arg_str as i64) as usize;
 
             // h. Let captures be a new empty List.
             let mut captures = Vec::new();
@@ -1322,7 +1300,7 @@ impl RegExp {
             // i. Repeat, while n ≤ nCaptures,
             for n in 1..=n_captures {
                 // i. Let capN be ? Get(result, ! ToString(𝔽(n))).
-                let mut cap_n = result.get(n.to_string(), context)?;
+                let mut cap_n = result.get(n, context)?;
 
                 // ii. If capN is not undefined, then
                 if !cap_n.is_undefined() {
@@ -1392,11 +1370,8 @@ impl RegExp {
                 //    In such cases, the corresponding substitution is ignored.
                 // ii. Set accumulatedResult to the string-concatenation of accumulatedResult,
                 //     the substring of S from nextSourcePosition to position, and replacement.
-                accumulated_result = js_string!(
-                    &accumulated_result,
-                    &arg_str[next_source_position..position],
-                    &replacement
-                );
+                accumulated_result.extend_from_slice(&arg_str[next_source_position..position]);
+                accumulated_result.extend_from_slice(&replacement);
 
                 // iii. Set nextSourcePosition to position + matchLength.
                 next_source_position = position + match_length;
@@ -1405,11 +1380,11 @@ impl RegExp {
 
         // 15. If nextSourcePosition ≥ lengthS, return accumulatedResult.
         if next_source_position >= length_arg_str {
-            return Ok(accumulated_result.into());
+            return Ok(js_string!(&accumulated_result[..]).into());
         }
 
         // 16. Return the string-concatenation of accumulatedResult and the substring of S from nextSourcePosition.
-        Ok(js_string!(&accumulated_result, &arg_str[next_source_position..]).into())
+        Ok(js_string!(&accumulated_result[..], &arg_str[next_source_position..]).into())
     }
 
     /// `RegExp.prototype[ @@search ]( string )`
@@ -1438,11 +1413,7 @@ impl RegExp {
         };
 
         // 3. Let S be ? ToString(string).
-        let arg_str = args
-            .get(0)
-            .cloned()
-            .unwrap_or_default()
-            .to_string(context)?;
+        let arg_str = args.get_or_undefined(0).to_string(context)?;
 
         // 4. Let previousLastIndex be ? Get(rx, "lastIndex").
         let previous_last_index = rx.get("lastIndex", context)?;
@@ -1527,8 +1498,7 @@ impl RegExp {
         )?;
         let splitter = splitter
             .as_object()
-            // TODO: remove when we handle realms on `get_prototype_from_constructor` and make
-            // `construct` always return a `JsObject`
+            // TODO: remove when we handle realms on `get_prototype_from_constructor` and make `construct` always return a `JsObject`
             .ok_or_else(|| context.construct_type_error("constructor did not return an object"))?;
 
         // 11. Let A be ! ArrayCreate(0).
@@ -1620,17 +1590,13 @@ impl RegExp {
                     let mut number_of_captures = result.length_of_array_like(context)? as isize;
 
                     // 7. Set numberOfCaptures to max(numberOfCaptures - 1, 0).
-                    number_of_captures = if number_of_captures == 0 {
-                        0
-                    } else {
-                        std::cmp::max(number_of_captures - 1, 0)
-                    };
+                    number_of_captures = std::cmp::max(number_of_captures - 1, 0);
 
                     // 8. Let i be 1.
                     // 9. Repeat, while i ≤ numberOfCaptures,
                     for i in 1..=number_of_captures {
                         // a. Let nextCapture be ? Get(z, ! ToString(𝔽(i))).
-                        let next_capture = result.get(i.to_string(), context)?;
+                        let next_capture = result.get(i, context)?;
 
                         // b. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(lengthA)), nextCapture).
                         a.create_data_property_or_throw(length_a, next_capture, context)
