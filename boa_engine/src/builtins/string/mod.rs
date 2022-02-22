@@ -23,7 +23,7 @@ use crate::{
     },
     property::{Attribute, PropertyDescriptor},
     string::utf16,
-    string::{CodePoint, Normalization, Utf16Trim},
+    string::{CodePoint, Utf16Trim},
     symbol::WellKnownSymbols,
     value::IntegerOrInfinity,
     Context, JsResult, JsString, JsValue,
@@ -1935,6 +1935,15 @@ impl String {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<JsValue> {
+        use unicode_normalization::UnicodeNormalization;
+        /// Represents the type of normalization applied to a [`JsString`]
+        #[derive(Clone, Copy)]
+        pub(crate) enum Normalization {
+            Nfc,
+            Nfd,
+            Nfkc,
+            Nfkd,
+        }
         // 1. Let O be ? RequireObjectCoercible(this value).
         let this = this.require_object_coercible(context)?;
 
@@ -1948,19 +1957,69 @@ impl String {
             form => form.to_string(context)?,
         };
 
-        // 7. Return ns.
-        match f {
-            // 6. Let ns be the String value that is the result of normalizing S
-            // into the normalization form named by f as specified in
-            // https://unicode.org/reports/tr15/.
-            ntype if &ntype == utf16!("NFC") => Ok(s.normalize(Normalization::Nfc).into()),
-            ntype if &ntype == utf16!("NFD") => Ok(s.normalize(Normalization::Nfd).into()),
-            ntype if &ntype == utf16!("NFKC") => Ok(s.normalize(Normalization::Nfkc).into()),
-            ntype if &ntype == utf16!("NFKD") => Ok(s.normalize(Normalization::Nfkd).into()),
+        // 6. Let ns be the String value that is the result of normalizing S
+        // into the normalization form named by f as specified in
+        // https://unicode.org/reports/tr15/.
+        let normalization = match f {
+            ntype if &ntype == utf16!("NFC") => Normalization::Nfc,
+            ntype if &ntype == utf16!("NFD") => Normalization::Nfd,
+            ntype if &ntype == utf16!("NFKC") => Normalization::Nfkc,
+            ntype if &ntype == utf16!("NFKD") => Normalization::Nfkd,
             // 5. If f is not one of "NFC", "NFD", "NFKC", or "NFKD", throw a RangeError exception.
-            _ => context
-                .throw_range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD."),
+            _ => {
+                return context.throw_range_error(
+                    "The normalization form should be one of NFC, NFD, NFKC, NFKD.",
+                )
+            }
+        };
+
+        let mut code_points = s.to_code_points();
+        let mut result = Vec::with_capacity(s.len());
+
+        let mut next_unpaired_surrogate = None;
+        let mut buf = [0; 2];
+
+        loop {
+            let only_chars = code_points.by_ref().map_while(|cpoint| match cpoint {
+                CodePoint::Unicode(c) => Some(c),
+                CodePoint::UnpairedSurrogate(s) => {
+                    next_unpaired_surrogate = Some(s);
+                    None
+                }
+            });
+
+            match normalization {
+                Normalization::Nfc => {
+                    for mapped in only_chars.nfc() {
+                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
+                    }
+                }
+                Normalization::Nfd => {
+                    for mapped in only_chars.nfd() {
+                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
+                    }
+                }
+                Normalization::Nfkc => {
+                    for mapped in only_chars.nfkc() {
+                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
+                    }
+                }
+                Normalization::Nfkd => {
+                    for mapped in only_chars.nfkd() {
+                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
+                    }
+                }
+            }
+
+            if let Some(surr) = next_unpaired_surrogate.take() {
+                result.push(surr);
+            } else {
+                break;
+            }
         }
+
+        // 7. Return ns.
+        Ok(js_string!(&result[..]).into())
     }
 
     /// `String.prototype.search( regexp )`
@@ -2012,7 +2071,7 @@ impl String {
     }
 }
 
-/// `22.1.3.17.1 GetSubstitution ( matched, str, position, captures, namedCaptures, replacement )`
+/// Abstract operation `GetSubstitution ( matched, str, position, captures, namedCaptures, replacement )`
 ///
 /// More information:
 ///  - [ECMAScript reference][spec]

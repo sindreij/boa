@@ -14,8 +14,16 @@ use std::{
     ptr::{self, NonNull},
     slice::SliceIndex,
 };
-use unicode_normalization::UnicodeNormalization;
 
+/// Utility macro to create a `JsString`. Invoke with:
+/// - no arguments for an empty `JsString`.
+/// - An `&[u16]` for a new `JsString` from the contents of the slice.
+/// - A string literal to automatically convert it to a const `&[u16]` slice, then
+/// creating a `JsString` from that. This completely skips the runtime conversion
+/// from `&str` to `&[u16]`.
+/// - Any `Into<JsString>` expression to create a new `JsString` using `JsString::from`.
+/// - Two or more `&[u16]` to create a new `JsString` from the concatenation of
+/// all the arguments.
 #[macro_export]
 macro_rules! js_string {
     () => {
@@ -202,14 +210,8 @@ thread_local! {
     };
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum Normalization {
-    Nfc,
-    Nfd,
-    Nfkc,
-    Nfkd,
-}
-
+/// Represents a codepoint within a [`JsString`], which could be a valid
+/// Unicode code point, or an unpaired surrogate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CodePoint {
     Unicode(char),
@@ -217,6 +219,8 @@ pub(crate) enum CodePoint {
 }
 
 impl CodePoint {
+    /// Get the number of UTF-16 code units needed to encode
+    /// this code point.
     pub(crate) fn code_unit_count(self) -> usize {
         match self {
             Self::Unicode(c) => c.len_utf16(),
@@ -224,6 +228,7 @@ impl CodePoint {
         }
     }
 
+    /// Convert the code point to its [`u32`] representation.
     pub(crate) fn as_u32(self) -> u32 {
         match self {
             Self::Unicode(c) => c as u32,
@@ -231,6 +236,8 @@ impl CodePoint {
         }
     }
 
+    /// If the code point represents a valid Unicode code point, return
+    /// its [`char`] representation.
     pub(crate) fn as_char(self) -> Option<char> {
         match self {
             Self::Unicode(c) => Some(c),
@@ -238,6 +245,13 @@ impl CodePoint {
         }
     }
 
+    /// Encodes this code point as UTF-16 into the provided u16 buffer, and then
+    /// returns the subslice of the buffer that contains the encoded character.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the buffer is not large enough. A buffer of length 2 is large
+    /// enough to encode any code point.
     pub(crate) fn encode_utf16(self, dst: &mut [u16]) -> &[u16] {
         match self {
             CodePoint::Unicode(c) => c.encode_utf16(dst),
@@ -252,7 +266,7 @@ impl CodePoint {
 /// The inner representation of a [`JsString`].
 #[repr(C)]
 struct Inner {
-    /// The utf16 length.
+    /// The UTF-16 length.
     len: usize,
 
     /// The number of references to the string.
@@ -264,85 +278,137 @@ struct Inner {
     data: [u16; 0],
 }
 
-/// This represents a JavaScript primitive string.
+/// This represents a JavaScript primitive string, which is an UTF-16 reference
+/// counted string that can have invalid surrogates within it.
 ///
-/// This is similar to `Rc<str>`. But unlike `Rc<str>` which stores the length
-/// on the stack and a pointer to the data (this is also known as fat pointers).
-/// The `JsString` length and data is stored on the heap. and just an non-null
-/// pointer is kept, so its size is the size of a pointer.
+/// This is pretty similar to a `Rc<[u16]>`, but without the length metadata
+/// associated with the `Rc` fat pointer. Instead, the length of every string
+/// is stored on the heap, along with the reference counter and the string.
 #[derive(Finalize)]
 pub struct JsString {
     ptr: NonNull<Inner>,
 }
 
 impl JsString {
+    /// Obtain the inner reference to the
     fn inner(&self) -> &Inner {
+        // SAFETY: Initialization should leave `ptr` in a correct state, pointing
+        //         to a valid `Inner`.
         unsafe { self.ptr.as_ref() }
     }
 
-    unsafe fn from_ptr(ptr: *mut Inner) -> Self {
-        Self {
-            ptr: unsafe { NonNull::new_unchecked(ptr) },
-        }
-    }
-
-    unsafe fn allocate(len: usize) -> *mut Inner {
+    // This is marked as safe because it is always valid to call this function to request
+    // any number of `u16`, since this function ought to fail on an OOM error.
+    /// Allocate a new `Inner` with an internal capacity of `str_len` chars.
+    fn allocate_inner(str_len: usize) -> NonNull<Inner> {
         // We get the layout of the `Inner` type and we extend by the size
         // of the string array.
-        let (layout, offset) = Layout::array::<u16>(len)
+        let (layout, offset) = Layout::array::<u16>(str_len)
             .and_then(|arr| Layout::new::<Inner>().extend(arr))
             .map(|(layout, offset)| (layout.pad_to_align(), offset))
             .expect("failed to create memory layout");
 
-        unsafe {
-            let inner = alloc(layout).cast::<Inner>();
+        // SAFETY:
+        // - The layout size of `Inner` is never zero, since it has to store
+        // the length of the string and the reference count.
+        let inner = unsafe { alloc(layout).cast::<Inner>() };
 
+        // We need to verify that the pointer returned by `alloc` is not null, otherwise
+        // we should abort, since an allocation error is pretty unrecoverable for us
+        // right now.
+        let inner = NonNull::new(inner).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+
+        // SAFETY:
+        // `NonNull` verified for us that the pointer returned by `alloc` is valid,
+        // meaning we can write to its pointed memory.
+        unsafe {
             // Write the first part, the Inner.
-            inner.write(Inner {
-                len,
+            inner.as_ptr().write(Inner {
+                len: str_len,
                 refcount: Cell::new(1),
                 data: [0; 0],
             });
-
-            // Get offset into the string data.
-            let data = (*inner).data.as_mut_ptr();
-
-            debug_assert!(ptr::eq(inner.cast::<u8>().add(offset).cast(), data));
-
-            inner
         }
+
+        debug_assert!({
+            let inner = inner.as_ptr();
+            // SAFETY:
+            // - `inner` must be a valid pointer, since it comes from a `NonNull`,
+            // meaning we can safely dereference it to `Inner`.
+            // - `offset` should point us to the beginning of the array,
+            // and since we requested an `Inner` layout with a trailing
+            // `[u16; str_len]`, the memory of the array must be in the `usize`
+            // range for the allocation to succeed.
+            unsafe {
+                let data = (*inner).data.as_ptr();
+                ptr::eq(inner.cast::<u8>().add(offset).cast(), data)
+            }
+        });
+
+        inner
     }
 
+    /// Create a new `JsString` from `data`, without checking if the string is
+    /// in the interner.
     fn from_slice_skip_interning(data: &[u16]) -> Self {
+        let count = data.len();
+        let ptr = Self::allocate_inner(count);
+        // SAFETY:
+        // - We read `count = data.len()` elements from `data`, which is within the bounds
+        //   of the slice.
+        // - `allocate_inner` must allocate at least `count` elements, which
+        //   allows us to safely write at least `count` elements.
+        // - `allocate_inner` should already take care of the alignment of `ptr`,
+        //   and `data` must be aligned to be a valid slice.
+        // - `allocate_inner` must return a valid pointer to newly allocated memory,
+        //    meaning `ptr` and `data` should never overlap.
         unsafe {
-            let ptr = Self::allocate(data.len());
-            ptr::copy_nonoverlapping(data.as_ptr(), (*ptr).data.as_mut_ptr(), data.len());
-            Self::from_ptr(ptr)
+            ptr::copy_nonoverlapping(data.as_ptr(), (*ptr.as_ptr()).data.as_mut_ptr(), count);
         }
+        Self { ptr }
     }
 
+    /// Obtain the underlying `&[u16]` slice of a `JsString`
     pub fn as_slice(&self) -> &[u16] {
         self
     }
 
-    /// Concatenate two string.
+    /// Create a new `JsString` from the concatenation of `x` and `y`.
     pub fn concat(x: &[u16], y: &[u16]) -> Self {
         Self::concat_array(&[x, y])
     }
 
-    /// Concatenate array of string.
+    /// Create a new `JsString` from the concatenation of every element of
+    /// `strings`.
     pub fn concat_array(strings: &[&[u16]]) -> Self {
-        let len = strings.iter().fold(0, |len, s| len + s.len());
+        let full_count = strings.iter().fold(0, |len, s| len + s.len());
 
-        let string = unsafe {
-            let ptr = Self::allocate(len);
-            let data = (*ptr).data.as_mut_ptr();
-            let mut offset = 0;
+        let ptr = Self::allocate_inner(full_count);
+
+        let string = {
+            // SAFETY:
+            // - `ptr` being a `NonNull` ensures that a dereference of its underlying
+            // pointer is always valid.
+            let mut data = unsafe { (*ptr.as_ptr()).data.as_mut_ptr() };
             for string in strings {
-                ptr::copy_nonoverlapping(string.as_ptr(), data.add(offset), string.len());
-                offset += string.len();
+                let count = string.len();
+                // SAFETY:
+                // - The sum of all `count` for each `string` equals `full_count`,
+                // and since we're iteratively writing each of them to `data`,
+                // `copy_non_overlapping` always stays in-bounds for `count` reads
+                // of each string and `full_count` writes to `data`.
+                //
+                // - Each `string` must be properly aligned to be a valid
+                // slice, and `data` must be properly aligned by `allocate_inner`.
+                //
+                // - `allocate_inner` must return a valid pointer to newly allocated memory,
+                //    meaning `ptr` and all `string`s should never overlap.
+                unsafe {
+                    ptr::copy_nonoverlapping(string.as_ptr(), data, count);
+                    data = data.add(count);
+                }
             }
-            Self::from_ptr(ptr)
+            Self { ptr }
         };
 
         if string.len() <= MAX_CONSTANT_STRING_LENGTH {
@@ -379,7 +445,7 @@ impl JsString {
         })
     }
 
-    /// `6.1.4.1 StringIndexOf ( string, searchValue, fromIndex )`
+    /// Abstract operation `StringIndexOf ( string, searchValue, fromIndex )`
     ///
     /// Note: Instead of returning an isize with `-1` as the "not found" value,
     /// we make use of the type system and return Option<usize> with None as the "not found" value.
@@ -402,29 +468,20 @@ impl JsString {
         }
 
         // 6. Let searchLen be the length of searchValue.
-        let search_len = search_value.len();
-
-        let range = len.checked_sub(search_len)?;
-
         // 7. For each integer i starting with fromIndex such that i ≤ len - searchLen, in ascending order, do
-        for i in from_index..=range {
-            // a. Let candidate be the substring of string from i to i + searchLen.
-            let candidate = &self[i..i + search_len];
-
-            // b. If candidate is the same sequence of code units as searchValue, return i.
-            if candidate == search_value {
-                return Some(i);
-            }
-        }
-
+        // a. Let candidate be the substring of string from i to i + searchLen.
+        // b. If candidate is the same sequence of code units as searchValue, return i.
         // 8. Return -1.
-        None
+        self.windows(search_value.len())
+            .skip(from_index)
+            .position(|s| s == search_value)
+            .map(|i| i + from_index)
     }
 
     /// Abstract operation `CodePointAt( string, position )`.
     ///
     /// The abstract operation `CodePointAt` interprets `string` as a sequence of
-    /// `UTF-16` encoded code points and reads from it a single code point starting
+    /// UTF-16 encoded code points and reads from it a single code point starting
     /// with the code unit at index `position`.
     ///
     /// More information:
@@ -464,13 +521,23 @@ impl JsString {
         }
     }
 
+    /// Abstract operation `StringToNumber ( str )`
+    ///
+    /// More information:
+    /// - [ECMAScript reference][spec]
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-stringtonumber
     #[allow(clippy::question_mark)]
     pub(crate) fn to_number(&self) -> f64 {
+        // 1. Let text be ! StringToCodePoints(str).
+        // 2. Let literal be ParseText(text, StringNumericLiteral).
         let string = if let Ok(string) = self.as_std_string() {
             string
         } else {
+            // 3. If literal is a List of errors, return NaN.
             return f64::NAN;
         };
+        // 4. Return StringNumericValue of literal.
         let string = string.trim_matches(is_trimmable_whitespace);
         // TODO: write our own lexer to match syntax StrDecimalLiteral
         match string {
@@ -494,57 +561,20 @@ impl JsString {
         }
     }
 
+    /// Abstract operation `StringToBigInt ( str )`
+    ///
+    /// More information:
+    /// - [ECMAScript reference][spec]
+    ///
+    /// [spec]: https://tc39.es/ecma262/#sec-stringtobigint
     pub(crate) fn to_big_int(&self) -> Option<JsBigInt> {
+        // 1. Let text be ! StringToCodePoints(str).
+        // 2. Let literal be ParseText(text, StringIntegerLiteral).
+        // 3. If literal is a List of errors, return undefined.
+        // 4. Let mv be the MV of literal.
+        // 5. Assert: mv is an integer.
+        // 6. Return ℤ(mv).
         JsBigInt::from_string(self.as_std_string().ok().as_ref()?)
-    }
-
-    pub(crate) fn normalize(&self, normalization: Normalization) -> Self {
-        let mut code_points = self.to_code_points();
-        let mut result = Vec::with_capacity(self.len());
-
-        let mut next_unpaired_surrogate = None;
-        let mut buf = [0; 2];
-
-        loop {
-            let only_chars = code_points.by_ref().map_while(|cpoint| match cpoint {
-                CodePoint::Unicode(c) => Some(c),
-                CodePoint::UnpairedSurrogate(s) => {
-                    next_unpaired_surrogate = Some(s);
-                    None
-                }
-            });
-
-            match normalization {
-                Normalization::Nfc => {
-                    for mapped in only_chars.nfc() {
-                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
-                    }
-                }
-                Normalization::Nfd => {
-                    for mapped in only_chars.nfd() {
-                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
-                    }
-                }
-                Normalization::Nfkc => {
-                    for mapped in only_chars.nfkc() {
-                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
-                    }
-                }
-                Normalization::Nfkd => {
-                    for mapped in only_chars.nfkd() {
-                        result.extend_from_slice(mapped.encode_utf16(&mut buf));
-                    }
-                }
-            }
-
-            if let Some(surr) = next_unpaired_surrogate.take() {
-                result.push(surr);
-            } else {
-                break;
-            }
-        }
-
-        js_string!(&result[..])
     }
 }
 
@@ -580,11 +610,12 @@ impl Drop for JsString {
     fn drop(&mut self) {
         self.inner().refcount.set(self.inner().refcount.get() - 1);
         if self.inner().refcount.get() == 0 {
-            // Safety: If refcount is 0 and we call drop, that means this is the last
-            // JsString which points to this memory allocation, so deallocating it is safe.
+            // Safety:
+            // - If refcount is 0 and we call drop, that means this is the last JsString
+            // which points to this memory allocation, so deallocating it is safe.
             unsafe {
                 ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
-                    &mut (*self.ptr.as_ptr()).data,
+                    (*self.ptr.as_ptr()).data.as_mut_ptr(),
                     self.inner().len,
                 ));
                 dealloc(

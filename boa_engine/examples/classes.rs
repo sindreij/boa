@@ -1,6 +1,7 @@
 // NOTE: this example requires the `console` feature to run correctly.
 
 use boa_engine::{
+    builtins::JsArgs,
     class::{Class, ClassBuilder},
     property::Attribute,
     Context, JsResult, JsString, JsValue,
