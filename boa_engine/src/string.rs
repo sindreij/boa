@@ -1,5 +1,14 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
+//! A UTF-16–encoded, reference counted, immutable string.
+//!
+//! This module contains the [`JsString`] type, the [`js_string`] macro and
+//! the [`utf16`] macro.
+//!
+//! The [`js_string`] macro is almost always used when you need to create a new
+//! [`JsString`], and the [`utf16`] macro is used for const conversions of
+//! string literals to UTF-16.
+
 use crate::{builtins::string::is_trimmable_whitespace, JsBigInt};
 use boa_gc::{unsafe_empty_trace, Finalize, Trace};
 pub use const_utf16::encode as utf16;
@@ -15,31 +24,66 @@ use std::{
     slice::SliceIndex,
 };
 
-/// Utility macro to create a `JsString`. Invoke with:
-/// - no arguments for an empty `JsString`.
-/// - An `&[u16]` for a new `JsString` from the contents of the slice.
-/// - A string literal to automatically convert it to a const `&[u16]` slice, then
-/// creating a `JsString` from that. This completely skips the runtime conversion
-/// from `&str` to `&[u16]`.
-/// - Any `Into<JsString>` expression to create a new `JsString` using `JsString::from`.
-/// - Two or more `&[u16]` to create a new `JsString` from the concatenation of
-/// all the arguments.
+/// Utility macro to create a `JsString`.
+///
+/// # Examples
+///
+/// You can call the macro without arguments to create an empty [`JsString`]:
+///
+/// ```
+/// use boa_engine::js_string;
+/// use boa_engine::string::utf16;
+///
+/// let empty_str = js_string!();
+/// assert!(empty_str.is_empty());
+/// ```
+///
+///
+/// You can create a [`JsString`] from a string literal, which completely skips
+/// the runtime conversion from [`&str`] to [`&\[u16\]`]:
+///
+/// ```
+/// # use boa_engine::js_string;
+/// # use boa_engine::string::utf16;
+/// let hw = js_string!("Hello, world!");
+/// assert_eq!(&hw, utf16!("Hello, world!"));
+/// ```
+///
+/// Any [`\[u16\]`] slice is a valid [`JsString`], including unpaired surrogates:
+///
+/// ```
+/// # use boa_engine::js_string;
+/// let array = js_string!(&[0xD8AFu16, 0x00A0, 0xD8FF, 0x00F0]);
+/// ```
+///
+/// You can also pass it any number of [`&\[u16\]`] as arguments to create a new
+/// [`JsString`] with the concatenation of every slice:
+///
+/// ```
+/// # use boa_engine::js_string;
+/// # use boa_engine::string::utf16;
+/// const NAME: &[u16]  = utf16!("human! ");
+/// let greeting = js_string!("Hello, ");
+/// let msg = js_string!(&greeting, &NAME, utf16!("Nice to meet you!"));
+///
+/// assert_eq!(&msg, utf16!("Hello, human! Nice to meet you!"));
+/// ```
 #[macro_export]
 macro_rules! js_string {
     () => {
-        crate::JsString::default()
+        $crate::JsString::default()
     };
     ($s:literal) => {
-        crate::JsString::from(crate::string::utf16!($s))
+        $crate::JsString::from($crate::string::utf16!($s))
     };
     ($s:expr) => {
-        crate::JsString::from($s)
+        $crate::JsString::from($s)
     };
     ( $x:expr, $y:expr ) => {
-        crate::JsString::concat($x, $y)
+        $crate::JsString::concat($x, $y)
     };
     ( $( $s:expr ),+ ) => {
-        crate::JsString::concat_array(&[ $( $s ),+ ])
+        $crate::JsString::concat_array(&[ $( $s ),+ ])
     };
 }
 
@@ -278,12 +322,16 @@ struct Inner {
     data: [u16; 0],
 }
 
-/// This represents a JavaScript primitive string, which is an UTF-16 reference
-/// counted string that can have invalid surrogates within it.
+/// A UTF-16–encoded, reference counted, immutable string.
 ///
-/// This is pretty similar to a `Rc<[u16]>`, but without the length metadata
+/// This is pretty similar to a [`Rc<\[u16\]>`], but without the length metadata
 /// associated with the `Rc` fat pointer. Instead, the length of every string
-/// is stored on the heap, along with the reference counter and the string.
+/// is stored on the heap, along with its reference counter and its data.
+///
+/// # Deref
+///
+/// `JsString` implements <code>[Deref]<Target = [\[u16\]]></code>, inheriting
+/// all of [`\[u16\]`]'s methods.
 #[derive(Finalize)]
 pub struct JsString {
     ptr: NonNull<Inner>,
