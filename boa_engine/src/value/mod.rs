@@ -863,7 +863,7 @@ impl JsValue {
         // 3. Return min(len, 2^53 - 1).
         Ok(self
             .to_integer_or_infinity(context)?
-            .clamp_finite(0, Number::MAX_SAFE_INTEGER as i64 - 1) as usize)
+            .clamp_finite(0, Number::MAX_SAFE_INTEGER as i64) as usize)
     }
 
     /// Converts a value to an integral Number value.

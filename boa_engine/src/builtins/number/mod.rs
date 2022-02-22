@@ -102,7 +102,7 @@ impl Number {
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/MAX_SAFE_INTEGER
     pub(crate) const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991_f64;
 
-    /// The `Number.MIN_SAFE_INTEGER` constant represents the minimum safe integer in JavaScript (`-(253 - 1)`).
+    /// The `Number.MIN_SAFE_INTEGER` constant represents the minimum safe integer in JavaScript (`-(2^53 - 1)`).
     ///
     /// More information:
     ///  - [ECMAScript reference][spec]
