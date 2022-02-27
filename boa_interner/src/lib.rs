@@ -72,22 +72,112 @@
 #[cfg(test)]
 mod tests;
 
+use core::fmt;
 use std::{fmt::Display, num::NonZeroUsize};
 
+use const_utf16::encode as utf16;
 use gc::{unsafe_empty_trace, Finalize, Trace};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use string_interner::{backend::BucketBackend, StringInterner, Symbol};
+use string_interner::{backend::BucketBackend, symbol::SymbolUsize, StringInterner, Symbol};
 
 /// Backend of the string interner.
-type Backend = BucketBackend<Sym>;
+type UTF8Backend = BucketBackend<str, UTF8Sym>;
+type UTF16Backend = BucketBackend<[u16], UTF16Sym>;
 
 /// The string interner for Boa.
 ///
 /// This is a type alias that makes it easier to reference it in the code.
 #[derive(Debug)]
 pub struct Interner {
-    inner: StringInterner<Backend>,
+    utf8: StringInterner<UTF8Backend>,
+    utf16: StringInterner<UTF16Backend>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternedStr<'a> {
+    Str(&'a str),
+    JStr(&'a [u16]),
+}
+
+impl<'a> InternedStr<'a> {
+    pub fn join<F, G, T>(self, f: F, g: G) -> T
+    where
+        F: FnOnce(&'a str) -> T,
+        G: FnOnce(&'a [u16]) -> T,
+    {
+        match self {
+            InternedStr::Str(s) => f(s),
+            InternedStr::JStr(js) => g(js),
+        }
+    }
+
+    pub fn join_with_context<C, F, G, T>(self, ctx: C, f: F, g: G) -> T
+    where
+        F: FnOnce(C, &'a str) -> T,
+        G: FnOnce(C, &'a [u16]) -> T,
+    {
+        match self {
+            InternedStr::Str(s) => f(ctx, s),
+            InternedStr::JStr(js) => g(ctx, js),
+        }
+    }
+
+    pub fn into_common<C>(self) -> C
+    where
+        C: From<&'a str> + From<&'a [u16]>,
+    {
+        match self {
+            InternedStr::Str(s) => s.into(),
+            InternedStr::JStr(js) => js.into(),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for InternedStr<'a> {
+    fn from(s: &'a str) -> Self {
+        InternedStr::Str(s)
+    }
+}
+
+impl<'a> From<&'a [u16]> for InternedStr<'a> {
+    fn from(s: &'a [u16]) -> Self {
+        InternedStr::JStr(s)
+    }
+}
+
+impl<'a> Display for InternedStr<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.join_with_context(
+            f,
+            |f, s| s.fmt(f),
+            |f, js| {
+                char::decode_utf16(js.iter().copied())
+                    .map(|r| match r {
+                        Ok(c) => String::from(c),
+                        Err(e) => format!("\\u{:04X}", e.unpaired_surrogate()),
+                    })
+                    .collect::<String>()
+                    .fmt(f)
+            },
+        )
+    }
+}
+
+pub trait Internable<'a> {
+    fn as_internable(&'a self) -> InternedStr<'a>;
+}
+
+impl<'a> Internable<'a> for str {
+    fn as_internable(&'a self) -> InternedStr<'a> {
+        InternedStr::Str(self)
+    }
+}
+
+impl<'a> Internable<'a> for [u16] {
+    fn as_internable(&'a self) -> InternedStr<'a> {
+        InternedStr::JStr(self)
+    }
 }
 
 impl Interner {
@@ -95,31 +185,38 @@ impl Interner {
     #[inline]
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            inner: StringInterner::with_capacity(cap),
+            utf8: StringInterner::with_capacity(cap),
+            utf16: StringInterner::with_capacity(cap),
         }
     }
 
     /// Returns the number of strings interned by the interner.
     #[inline]
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.utf8.len() + self.utf16.len()
     }
 
     /// Returns `true` if the string interner has no interned strings.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.utf8.is_empty() && self.utf16.is_empty()
     }
 
     /// Returns the symbol for the given string if any.
     ///
     /// Can be used to query if a string has already been interned without interning.
-    pub fn get<T>(&self, string: T) -> Option<Sym>
+    pub fn get<'a, T>(&self, string: &'a T) -> Option<Sym>
     where
-        T: AsRef<str>,
+        T: Internable<'a> + ?Sized,
     {
-        let string = string.as_ref();
-        Self::get_static(string).or_else(|| self.inner.get(string))
+        let internable = string.as_internable();
+        if let Some(sym) = Self::get_static(internable) {
+            return Some(sym);
+        }
+        string.as_internable().join(
+            |s| self.utf8.get(s).map(Sym::from),
+            |js| self.utf16.get(js).map(Sym::from),
+        )
     }
 
     /// Interns the given string.
@@ -128,12 +225,18 @@ impl Interner {
     ///
     /// # Panics
     /// If the interner already interns the maximum number of strings possible by the chosen symbol type.
-    pub fn get_or_intern<T>(&mut self, string: T) -> Sym
+    pub fn get_or_intern<'a, T>(&mut self, string: &'a T) -> Sym
     where
-        T: AsRef<str>,
+        T: Internable<'a> + ?Sized,
     {
-        let string = string.as_ref();
-        Self::get_static(string).unwrap_or_else(|| self.inner.get_or_intern(string))
+        let internable = string.as_internable();
+        if let Some(sym) = Self::get_static(internable) {
+            return sym;
+        }
+        string.as_internable().join(
+            |s| self.utf8.get_or_intern(s).into(),
+            |js| self.utf16.get_or_intern(js).into(),
+        )
     }
 
     /// Interns the given `'static` string.
@@ -149,24 +252,34 @@ impl Interner {
     ///
     /// If the interner already interns the maximum number of strings possible
     /// by the chosen symbol type.
-    pub fn get_or_intern_static(&mut self, string: &'static str) -> Sym {
-        Self::get_static(string).unwrap_or_else(|| self.inner.get_or_intern_static(string))
+    pub fn get_or_intern_static<T>(&mut self, string: &'static T) -> Sym
+    where
+        T: Internable<'static> + ?Sized,
+    {
+        let internable = string.as_internable();
+        if let Some(sym) = Self::get_static(internable) {
+            return sym;
+        }
+        internable.join(
+            |s| self.utf8.get_or_intern_static(s).into(),
+            |js| self.utf16.get_or_intern_static(js).into(),
+        )
     }
 
     /// Shrink backend capacity to fit the interned strings exactly.
     #[inline]
     pub fn shrink_to_fit(&mut self) {
-        self.inner.shrink_to_fit();
+        self.utf8.shrink_to_fit();
+        self.utf16.shrink_to_fit();
     }
 
     /// Returns the string for the given symbol if any.
     #[inline]
-    pub fn resolve(&self, symbol: Sym) -> Option<&str> {
-        let index = symbol.as_raw().get();
-        if index <= Self::STATIC_STRINGS.len() {
-            Some(Self::STATIC_STRINGS[index - 1])
-        } else {
-            self.inner.resolve(symbol)
+    pub fn resolve(&self, symbol: Sym) -> Option<InternedStr<'_>> {
+        match symbol.into_internal_symbol() {
+            IntoSymbol::Static(index) => Some(InternedStr::Str(Self::STATIC_STRINGS[index].0)),
+            IntoSymbol::UTF8Sym(s) => self.utf8.resolve(s).map(InternedStr::from),
+            IntoSymbol::UTF16Sym(js) => self.utf16.resolve(js).map(InternedStr::from),
         }
     }
 
@@ -176,16 +289,19 @@ impl Interner {
     ///
     /// If the interner cannot resolve the given symbol.
     #[inline]
-    pub fn resolve_expect(&self, symbol: Sym) -> &str {
+    pub fn resolve_expect(&self, symbol: Sym) -> InternedStr<'_> {
         self.resolve(symbol).expect("string disappeared")
     }
 
     /// Gets the symbol of the static string if one of them
-    fn get_static(string: &str) -> Option<Sym> {
+    fn get_static(string: InternedStr<'_>) -> Option<Sym> {
         Self::STATIC_STRINGS
             .into_iter()
             .enumerate()
-            .find(|&(_i, s)| string == s)
+            .find(|&(_i, s)| match string {
+                InternedStr::Str(str) => str == s.0,
+                InternedStr::JStr(jstr) => jstr == s.1,
+            })
             .map(|(i, _str)| {
                 let raw = NonZeroUsize::new(i.wrapping_add(1)).expect("static array too big");
                 Sym::from_raw(raw)
@@ -193,48 +309,145 @@ impl Interner {
     }
 }
 
-impl<T> FromIterator<T> for Interner
-where
-    T: AsRef<str>,
-{
+impl<'a> FromIterator<&'a str> for Interner {
     #[inline]
     fn from_iter<I>(iter: I) -> Self
     where
-        I: IntoIterator<Item = T>,
+        I: IntoIterator<Item = &'a str>,
     {
         Self {
-            inner: StringInterner::from_iter(iter),
+            utf8: StringInterner::from_iter(iter),
+            utf16: StringInterner::default(),
         }
     }
 }
 
-impl<T> Extend<T> for Interner
-where
-    T: AsRef<str>,
-{
+impl FromIterator<String> for Interner {
+    #[inline]
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = String>,
+    {
+        Self {
+            utf8: StringInterner::from_iter(iter),
+            utf16: StringInterner::default(),
+        }
+    }
+}
+
+impl<'a> FromIterator<&'a [u16]> for Interner {
+    #[inline]
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = &'a [u16]>,
+    {
+        Self {
+            utf8: StringInterner::default(),
+            utf16: StringInterner::from_iter(iter),
+        }
+    }
+}
+
+impl FromIterator<Vec<u16>> for Interner {
+    #[inline]
+    fn from_iter<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = Vec<u16>>,
+    {
+        Self {
+            utf8: StringInterner::default(),
+            utf16: StringInterner::from_iter(iter),
+        }
+    }
+}
+impl<'a> Extend<&'a str> for Interner {
     #[inline]
     fn extend<I>(&mut self, iter: I)
     where
-        I: IntoIterator<Item = T>,
+        I: IntoIterator<Item = &'a str>,
     {
-        self.inner.extend(iter);
+        self.utf8.extend(iter);
+    }
+}
+
+impl Extend<String> for Interner {
+    #[inline]
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.utf8.extend(iter);
+    }
+}
+
+impl<'a> Extend<&'a [u16]> for Interner {
+    #[inline]
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = &'a [u16]>,
+    {
+        self.utf16.extend(iter);
+    }
+}
+
+impl Extend<Vec<u16>> for Interner {
+    #[inline]
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = Vec<u16>>,
+    {
+        self.utf16.extend(iter);
+    }
+}
+
+pub struct Iter<'a> {
+    utf8: <&'a UTF8Backend as IntoIterator>::IntoIter,
+    utf16: <&'a UTF16Backend as IntoIterator>::IntoIter,
+}
+
+#[allow(clippy::type_repetition_in_bounds)]
+impl<'a> fmt::Debug for Iter<'a>
+where
+    <&'a UTF8Backend as IntoIterator>::IntoIter: fmt::Debug,
+    <&'a UTF16Backend as IntoIterator>::IntoIter: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Iter")
+            .field("utf8", &self.utf8)
+            .field("utf16", &self.utf16)
+            .finish()
+    }
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = (Sym, InternedStr<'a>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.utf8
+            .next()
+            .map(|(sym, str)| (sym.into(), str.into()))
+            .or_else(|| self.utf16.next().map(|(sym, str)| (sym.into(), str.into())))
     }
 }
 
 impl<'a> IntoIterator for &'a Interner {
-    type Item = (Sym, &'a str);
-    type IntoIter = <&'a Backend as IntoIterator>::IntoIter;
+    type Item = (Sym, InternedStr<'a>);
+    type IntoIter = Iter<'a>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        self.inner.into_iter()
+        Iter {
+            utf8: self.utf8.into_iter(),
+            utf16: self.utf16.into_iter(),
+        }
     }
 }
 
 impl Default for Interner {
     fn default() -> Self {
         Self {
-            inner: StringInterner::new(),
+            utf8: StringInterner::new(),
+            utf16: StringInterner::new(),
         }
     }
 }
@@ -300,21 +513,84 @@ impl Sym {
     const fn as_raw(self) -> NonZeroUsize {
         self.value
     }
+
+    fn into_internal_symbol(self) -> IntoSymbol {
+        let unpadded = match self.as_raw().get() {
+            val if val < Self::PADDING => return IntoSymbol::Static(val - 1),
+            val => val - Self::PADDING,
+        };
+        if unpadded % 2 == 0 {
+            IntoSymbol::UTF8Sym(UTF8Sym(
+                SymbolUsize::try_from_usize(unpadded / 2)
+                    .expect("Symbol index overflowed the interner size!"),
+            ))
+        } else {
+            IntoSymbol::UTF16Sym(UTF16Sym(
+                SymbolUsize::try_from_usize((unpadded - 1) / 2)
+                    .expect("Symbol index overflowed the interner size!"),
+            ))
+        }
+    }
 }
 
-impl Symbol for Sym {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct UTF8Sym(SymbolUsize);
+
+impl From<UTF8Sym> for Sym {
+    fn from(sym: UTF8Sym) -> Self {
+        // SAFETY:
+        // The definition of `Self::PADDING` guarantees that it's >= 1,
+        // so sym.0.to_usize() * 2 + Self::PADDING > 0.
+        unsafe {
+            let value = sym.0.to_usize() * 2 + Self::PADDING;
+            Self::from_raw(NonZeroUsize::new_unchecked(value))
+        }
+    }
+}
+
+impl Symbol for UTF8Sym {
     #[inline]
     fn try_from_usize(index: usize) -> Option<Self> {
-        index
-            .checked_add(Self::PADDING)
-            .and_then(NonZeroUsize::new)
-            .map(|value| Self { value })
+        SymbolUsize::try_from_usize(index).map(Self)
     }
 
     #[inline]
     fn to_usize(self) -> usize {
-        self.value.get() - Self::PADDING
+        self.0.to_usize()
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct UTF16Sym(SymbolUsize);
+
+impl From<UTF16Sym> for Sym {
+    fn from(sym: UTF16Sym) -> Self {
+        // SAFETY:
+        // 1 > 0, so sym.value.get() * 2 + Self::PADDING + 1 > 1 > 0,
+        // meaning that sym.value.get() * 2 + Self::PADDING + 1 > 0
+        unsafe {
+            let value = sym.0.to_usize() * 2 + Self::PADDING + 1;
+            Self::from_raw(NonZeroUsize::new_unchecked(value))
+        }
+    }
+}
+
+impl Symbol for UTF16Sym {
+    #[inline]
+    fn try_from_usize(index: usize) -> Option<Self> {
+        SymbolUsize::try_from_usize(index).map(Self)
+    }
+
+    #[inline]
+    fn to_usize(self) -> usize {
+        self.0.to_usize()
+    }
+}
+
+enum IntoSymbol {
+    Static(usize),
+    UTF8Sym(UTF8Sym),
+    UTF16Sym(UTF16Sym),
 }
 
 // Safe because `Sym` implements `Copy`.
@@ -337,22 +613,36 @@ where
     }
 }
 
-impl Interner {
-    /// List of commonly used static strings.
-    ///
-    /// Make sure that any string added as a `Sym` constant is also added here.
-    const STATIC_STRINGS: [&'static str; 12] = [
-        "",
-        "arguments",
-        "await",
-        "yield",
-        "eval",
-        "default",
-        "null",
-        "RegExp",
-        "get",
-        "set",
-        "<main>",
-        "raw",
-    ];
+macro_rules! static_strings {
+    (
+        $($string:literal),*;
+        $size:literal
+    ) => {
+        impl Interner {
+            /// List of commonly used static strings.
+            ///
+            /// Make sure that any string added as a `Sym` constant is also added here.
+            const STATIC_STRINGS: [(&'static str, &'static [u16]); $size] = [
+                $(
+                    ($string, utf16!($string))
+                ),*
+            ];
+        }
+    };
 }
+
+static_strings![
+    "",
+    "arguments",
+    "await",
+    "yield",
+    "eval",
+    "default",
+    "null",
+    "RegExp",
+    "get",
+    "set",
+    "<main>",
+    "raw";
+    12
+];

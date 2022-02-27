@@ -229,16 +229,16 @@ impl TokenKind {
         match *self {
             Self::BooleanLiteral(val) => val.to_string(),
             Self::EOF => "end of file".to_owned(),
-            Self::Identifier(ident) => interner.resolve_expect(ident).to_owned(),
+            Self::Identifier(ident) => interner.resolve_expect(ident).to_string(),
             Self::Keyword(word) => word.to_string(),
             Self::NullLiteral => "null".to_owned(),
             Self::NumericLiteral(Numeric::Rational(num)) => num.to_string(),
             Self::NumericLiteral(Numeric::Integer(num)) => num.to_string(),
             Self::NumericLiteral(Numeric::BigInt(ref num)) => format!("{num}n"),
             Self::Punctuator(punc) => punc.to_string(),
-            Self::StringLiteral(lit) => interner.resolve_expect(lit).to_owned(),
+            Self::StringLiteral(lit) => interner.resolve_expect(lit).to_string(),
             Self::TemplateNoSubstitution(ts) | Self::TemplateMiddle(ts) => {
-                interner.resolve_expect(ts.as_raw()).to_owned()
+                interner.resolve_expect(ts.as_raw()).to_string()
             }
             Self::RegularExpressionLiteral(body, flags) => {
                 format!(
@@ -260,7 +260,7 @@ impl TokenKind {
             Self::BooleanLiteral(_)
             | Self::NumericLiteral(_)
             | Self::RegularExpressionLiteral(_, _) => {
-                interner.get_or_intern(&self.to_string(interner))
+                interner.get_or_intern(self.to_string(interner).as_str())
             }
             Self::EOF => interner.get_or_intern_static("end of file"),
             Self::Identifier(sym) | Self::StringLiteral(sym) => sym,

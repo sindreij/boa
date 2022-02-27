@@ -1,4 +1,4 @@
-use crate::{Interner, Sym};
+use crate::{InternedStr, Interner, Sym};
 use std::num::NonZeroUsize;
 
 #[track_caller]
@@ -11,7 +11,8 @@ fn check_static_strings() {
     let mut interner = Interner::default();
 
     for (i, str) in Interner::STATIC_STRINGS.into_iter().enumerate() {
-        assert_eq!(interner.get_or_intern(str), sym_from_usize(i + 1));
+        assert_eq!(interner.get_or_intern(str.0), sym_from_usize(i + 1));
+        assert_eq!(interner.get_or_intern(str.1), sym_from_usize(i + 1));
     }
 }
 
@@ -49,7 +50,7 @@ fn check_resolve() {
     for string in strings {
         let sym = interner.get_or_intern(string);
         let resolved = interner.resolve(sym).unwrap();
-        assert_eq!(string, resolved);
+        assert_eq!(InternedStr::Str(string), resolved);
 
         let new_sym = interner.get_or_intern(string);
 
@@ -63,11 +64,12 @@ fn check_static_resolve() {
 
     for string in Interner::STATIC_STRINGS
         .into_iter()
+        .map(|s| s.0)
         .chain(["my test str", "hello world", ";"].into_iter())
     {
         let sym = interner.get_or_intern_static(string);
         let resolved = interner.resolve(sym).unwrap();
-        assert_eq!(string, resolved);
+        assert_eq!(InternedStr::Str(string), resolved);
 
         let new_sym = interner.get_or_intern(string);
 

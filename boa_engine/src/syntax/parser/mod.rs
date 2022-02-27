@@ -136,7 +136,14 @@ where
                 match tok.kind() {
                     // Set the strict mode
                     TokenKind::StringLiteral(string)
-                        if interner.resolve_expect(*string) == "use strict" =>
+                        if interner.resolve_expect(*string).join(
+                            |s| s == "use strict",
+                            |g| {
+                                String::from_utf16(g)
+                                    .map(|s| s == "use strict")
+                                    .unwrap_or_default()
+                            },
+                        ) =>
                     {
                         cursor.set_strict_mode(true);
                         strict = true;

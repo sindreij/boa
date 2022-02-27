@@ -550,7 +550,7 @@ impl<'b> ByteCompiler<'b> {
             Node::Const(c) => {
                 match c {
                     Const::String(v) => self.emit_push_literal(Literal::String(
-                        self.interner().resolve_expect(*v).into(),
+                        self.interner().resolve_expect(*v).into_common(),
                     )),
                     Const::Int(v) => self.emit_push_integer(*v),
                     Const::Num(v) => self.emit_push_rational(*v),
@@ -963,7 +963,7 @@ impl<'b> ByteCompiler<'b> {
                 for element in template_literal.elements() {
                     match element {
                         TemplateElement::String(s) => self.emit_push_literal(Literal::String(
-                            self.interner().resolve_expect(*s).into(),
+                            self.interner().resolve_expect(*s).into_common(),
                         )),
                         TemplateElement::Expr(expr) => {
                             self.compile_expr(expr, true)?;
@@ -1036,7 +1036,7 @@ impl<'b> ByteCompiler<'b> {
                 for cooked in template.cookeds() {
                     if let Some(cooked) = cooked {
                         self.emit_push_literal(Literal::String(
-                            self.interner().resolve_expect(*cooked).into(),
+                            self.interner().resolve_expect(*cooked).into_common(),
                         ));
                     } else {
                         self.emit_opcode(Opcode::PushUndefined);
@@ -1048,7 +1048,7 @@ impl<'b> ByteCompiler<'b> {
                 self.emit_opcode(Opcode::PushNewArray);
                 for raw in template.raws() {
                     self.emit_push_literal(Literal::String(
-                        self.interner().resolve_expect(*raw).into(),
+                        self.interner().resolve_expect(*raw).into_common(),
                     ));
                     self.emit_opcode(Opcode::PushValueToArray);
                 }
@@ -2007,7 +2007,7 @@ impl<'b> ByteCompiler<'b> {
 
                             for key in excluded_keys {
                                 self.emit_push_literal(Literal::String(
-                                    self.interner().resolve_expect(*key).into(),
+                                    self.interner().resolve_expect(*key).into_common(),
                                 ));
                             }
 

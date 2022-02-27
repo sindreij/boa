@@ -450,7 +450,7 @@ impl JsValue {
                 } else {
                     context.throw_syntax_error(format!(
                         "cannot convert string '{}' to bigint primitive",
-                        string.as_std_string_lossy()
+                        string.to_std_string_escaped()
                     ))
                 }
             }

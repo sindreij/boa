@@ -160,7 +160,10 @@ impl Context {
         function_scope: bool,
         allow_name_reuse: bool,
     ) -> JsResult<()> {
-        let name_str = JsString::from(self.interner().resolve_expect(name));
+        let name_str = self
+            .interner()
+            .resolve_expect(name)
+            .into_common::<JsString>();
 
         for (i, env) in self.realm.compile_env.stack.iter_mut().enumerate().rev() {
             if !function_scope || env.function_scope {
@@ -170,7 +173,7 @@ impl Context {
                     }
                     return self.throw_syntax_error(format!(
                         "Redeclaration of variable {}",
-                        name_str.as_std_string_lossy()
+                        name_str.to_std_string_escaped()
                     ));
                 }
 
@@ -203,7 +206,7 @@ impl Context {
                     {
                         return self.throw_syntax_error(format!(
                             "Redeclaration of variable {}",
-                            name_str.as_std_string_lossy()
+                            name_str.to_std_string_escaped()
                         ));
                     }
                 }
@@ -254,7 +257,10 @@ impl Context {
     /// Panics if the global environment does not exist.
     #[inline]
     pub(crate) fn create_immutable_binding(&mut self, name: Sym) -> JsResult<()> {
-        let name_str = JsString::from(self.interner().resolve_expect(name));
+        let name_str = self
+            .interner()
+            .resolve_expect(name)
+            .into_common::<JsString>();
         let exists_global = self.realm.compile_env.stack.len() == 1
             && self.global_bindings().contains_key(&name_str);
 
@@ -268,7 +274,7 @@ impl Context {
         if env.bindings.contains_key(&name) || exists_global {
             self.throw_syntax_error(format!(
                 "Redeclaration of variable {}",
-                name_str.as_std_string_lossy()
+                name_str.to_std_string_escaped()
             ))
         } else {
             let binding_index = env.bindings.len();

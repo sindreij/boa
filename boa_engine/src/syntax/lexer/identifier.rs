@@ -124,7 +124,7 @@ impl<R> Tokenizer<R> for Identifier {
                     start_pos,
                 ));
             }
-            TokenKind::identifier(interner.get_or_intern(identifier_name))
+            TokenKind::identifier(interner.get_or_intern(identifier_name.as_str()))
         };
 
         Ok(Token::new(token_kind, Span::new(start_pos, cursor.pos())))

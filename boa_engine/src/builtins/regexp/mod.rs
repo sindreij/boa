@@ -272,7 +272,7 @@ impl RegExp {
         // 5. If F contains any code unit other than "g", "i", "m", "s", "u", or "y"
         //    or if it contains the same code unit more than once, throw a SyntaxError exception.
         // TODO: Should directly parse the JsString instead of converting to String
-        let flags = match RegExpFlags::from_str(&f.as_std_string_lossy()) {
+        let flags = match RegExpFlags::from_str(&f.to_std_string_escaped()) {
             Err(msg) => return context.throw_syntax_error(msg),
             Ok(result) => result,
         };
@@ -281,8 +281,8 @@ impl RegExp {
         // 13. Set obj.[[OriginalFlags]] to F.
         // 14. Set obj.[[RegExpMatcher]] to the Abstract Closure that evaluates parseResult by applying the semantics provided in 22.2.2 using patternCharacters as the pattern's List of SourceCharacter values and F as the flag parameters.
         // TODO: add support for utf16 regex to remove this conversions.
-        let ps = p.as_std_string_lossy();
-        let fs = f.as_std_string_lossy();
+        let ps = p.to_std_string_escaped();
+        let fs = f.to_std_string_escaped();
         let matcher = match Regex::with_flags(&ps, fs.as_ref()) {
             Err(error) => {
                 return context
@@ -821,7 +821,7 @@ impl RegExp {
                 }
             };
             let r = matcher
-                .find_from(input.as_std_string_lossy().as_str(), last_byte_index)
+                .find_from(input.to_std_string_escaped().as_str(), last_byte_index)
                 .next();
 
             match r {
@@ -867,7 +867,7 @@ impl RegExp {
 
         // 13. Let e be r's endIndex value.
         let mut e = match_value.end();
-        let lossy_input = input.as_std_string_lossy();
+        let lossy_input = input.to_std_string_escaped();
 
         // 14. If fullUnicode is true, then
         // TODO: disabled for now until we have UTF-16 support
