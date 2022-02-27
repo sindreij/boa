@@ -816,8 +816,7 @@ impl RegExp {
             let last_byte_index = match String::from_utf16(&input[..last_index]) {
                 Ok(s) => s.len(),
                 Err(_) => {
-                    return context
-                        .throw_type_error("Failed to get byte index from utf16 encoded string")
+                    return Ok(None);
                 }
             };
             let r = matcher
