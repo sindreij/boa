@@ -248,7 +248,6 @@ impl String {
     fn this_string_value(this: &JsValue, context: &mut Context) -> JsResult<JsString> {
         // 1. If Type(value) is String, return value.
         this.as_string()
-            .cloned()
             // 2. If Type(value) is Object and value has a [[StringData]] internal slot, then
             //     a. Let s be value.[[StringData]].
             //     b. Assert: Type(s) is String.
@@ -1001,6 +1000,7 @@ impl String {
         // 5. Let functionalReplace be IsCallable(replaceValue).
         let functional_replace = replace_value
             .as_object()
+            .as_ref()
             .map(JsObject::is_callable)
             .unwrap_or_default();
 
@@ -1096,7 +1096,7 @@ impl String {
             // a. Let isRegExp be ? IsRegExp(searchValue).
             if let Some(obj) = search_value.as_object() {
                 // b. If isRegExp is true, then
-                if is_reg_exp_object(obj, context)? {
+                if is_reg_exp_object(&obj, context)? {
                     // i. Let flags be ? Get(searchValue, "flags").
                     let flags = obj.get("flags", context)?;
 
@@ -1131,6 +1131,7 @@ impl String {
         // 5. Let functionalReplace be IsCallable(replaceValue).
         let functional_replace = replace_value
             .as_object()
+            .as_ref()
             .map(JsObject::is_callable)
             .unwrap_or_default();
 
@@ -1975,7 +1976,7 @@ impl String {
         if !regexp.is_null_or_undefined() {
             // a. Let isRegExp be ? IsRegExp(regexp).
             // b. If isRegExp is true, then
-            if let Some(regexp_obj) = regexp.as_object().filter(|obj| obj.is_regexp()) {
+            if let Some(regexp_obj) = regexp.as_object().filter(JsObject::is_regexp) {
                 // i. Let flags be ? Get(regexp, "flags").
                 let flags = regexp_obj.get("flags", context)?;
 
@@ -2203,7 +2204,7 @@ pub(crate) fn get_substitution(
                         result.push(second);
                         result.push(*third);
                     } else if let Some(capture) = captures.get(nn - 1) {
-                        if let Some(s) = capture.as_string() {
+                        if let Some(ref s) = capture.as_string() {
                             result.push_str(s);
                         }
                     }
@@ -2224,7 +2225,7 @@ pub(crate) fn get_substitution(
                         result.push('$');
                         result.push(second);
                     } else if let Some(capture) = captures.get(n - 1) {
-                        if let Some(s) = capture.as_string() {
+                        if let Some(ref s) = capture.as_string() {
                             result.push_str(s);
                         }
                     }
@@ -2340,7 +2341,7 @@ fn is_reg_exp(argument: &JsValue, context: &mut Context) -> JsResult<bool> {
         return Ok(false);
     };
 
-    is_reg_exp_object(argument, context)
+    is_reg_exp_object(&argument, context)
 }
 fn is_reg_exp_object(argument: &JsObject, context: &mut Context) -> JsResult<bool> {
     // 2. Let matcher be ? Get(argument, @@match).

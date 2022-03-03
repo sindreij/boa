@@ -114,7 +114,12 @@ impl Reflect {
         }
 
         let new_target = if let Some(new_target) = args.get(2) {
-            if new_target.as_object().map(JsObject::is_constructor) != Some(true) {
+            if new_target
+                .as_object()
+                .as_ref()
+                .map(JsObject::is_constructor)
+                != Some(true)
+            {
                 return context.throw_type_error("newTarget must be constructor");
             }
             new_target.clone()
@@ -146,7 +151,7 @@ impl Reflect {
         let key = args.get_or_undefined(1).to_property_key(context)?;
         let prop_desc: JsValue = args
             .get(2)
-            .and_then(|v| v.as_object().cloned())
+            .and_then(JsValue::as_object)
             .ok_or_else(|| context.construct_type_error("property descriptor must be an object"))?
             .into();
 
@@ -383,7 +388,7 @@ impl Reflect {
             .and_then(JsValue::as_object)
             .ok_or_else(|| context.construct_type_error("target must be an object"))?;
         let proto = match args.get_or_undefined(1).variant() {
-            JsVariant::Object(obj) => Some(obj.clone()),
+            JsVariant::Object(ref obj) => Some(obj.clone()),
             JsVariant::Null => None,
             _ => return context.throw_type_error("proto must be an object or null"),
         };

@@ -113,7 +113,7 @@ impl Proxy {
         let p = JsObject::from_proto_and_data(
             context.intrinsics().constructors().object().prototype(),
             ObjectData::proxy(
-                Self::new(target.clone(), handler.clone()),
+                Self::new(target.clone(), handler),
                 target.is_callable(),
                 target.is_constructor(),
             ),
