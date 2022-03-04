@@ -360,7 +360,8 @@ impl Array {
             Ok(
                 c.construct(&[JsValue::new(length)], &c.clone().into(), context)?
                     .as_object()
-                    .expect("constructing an object should always return an object"),
+                    .expect("constructing an object should always return an object")
+                    .clone(),
             )
         } else {
             context.throw_type_error("Symbol.species must be a constructor")
@@ -412,6 +413,8 @@ impl Array {
             Some(constructor) => constructor
                 .construct(&[len.into()], this, context)?
                 .as_object()
+                .as_deref()
+                .cloned()
                 .ok_or_else(|| {
                     context.construct_type_error("object constructor didn't return an object")
                 })?,

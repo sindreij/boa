@@ -867,7 +867,7 @@ impl TypedArray {
 
         // 3. Return CreateArrayIterator(O, key+value).
         Ok(ArrayIterator::create_array_iterator(
-            o,
+            o.clone(),
             PropertyNameKind::KeyAndValue,
             context,
         ))
@@ -1494,7 +1494,7 @@ impl TypedArray {
 
         // 3. Return CreateArrayIterator(O, key).
         Ok(ArrayIterator::create_array_iterator(
-            o,
+            o.clone(),
             PropertyNameKind::Key,
             context,
         ))
@@ -1907,9 +1907,9 @@ impl TypedArray {
         let source = args.get_or_undefined(0);
         match source.variant() {
             // 6. If source is an Object that has a [[TypedArrayName]] internal slot, then
-            JsVariant::Object(ref source) if source.is_typed_array() => {
+            JsVariant::Object(source) if source.is_typed_array() => {
                 // a. Perform ? SetTypedArrayFromTypedArray(target, targetOffset, source).
-                Self::set_typed_array_from_typed_array(&target, target_offset, source, context)?;
+                Self::set_typed_array_from_typed_array(&target, target_offset, &source, context)?;
             }
             // 7. Else,
             _ => {
@@ -2653,7 +2653,7 @@ impl TypedArray {
         let mut sort_err = Ok(());
         items.sort_by(|x, y| {
             if sort_err.is_ok() {
-                sort_compare(x, y, compare_fn.as_ref(), context).unwrap_or_else(|err| {
+                sort_compare(x, y, compare_fn.as_deref(), context).unwrap_or_else(|err| {
                     sort_err = Err(err);
                     Ordering::Equal
                 })
@@ -2789,7 +2789,7 @@ impl TypedArray {
 
         // 3. Return CreateArrayIterator(O, value).
         Ok(ArrayIterator::create_array_iterator(
-            o,
+            o.clone(),
             PropertyNameKind::Value,
             context,
         ))

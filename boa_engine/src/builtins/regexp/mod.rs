@@ -174,7 +174,7 @@ impl RegExp {
         let flags = args.get_or_undefined(1);
 
         // 1. Let patternIsRegExp be ? IsRegExp(pattern).
-        let pattern_is_regexp = pattern.as_object().filter(JsObject::is_regexp);
+        let pattern_is_regexp = pattern.as_object().filter(|obj| obj.is_regexp());
 
         // 2. If NewTarget is undefined, then
         // 3. Else, let newTarget be NewTarget.
@@ -187,7 +187,7 @@ impl RegExp {
                     let pattern_constructor = pattern.get("constructor", context)?;
                     // ii. If SameValue(newTarget, patternConstructor) is true, return pattern.
                     if JsValue::same_value(new_target, &pattern_constructor) {
-                        return Ok(pattern.clone().into());
+                        return Ok((&**pattern).clone().into());
                     }
                 }
             }
@@ -330,7 +330,7 @@ impl RegExp {
 
     #[inline]
     fn regexp_has_flag(this: &JsValue, flag: u8, context: &mut Context) -> JsResult<JsValue> {
-        if let Some(object) = this.as_object() {
+        if let Some(ref object) = this.as_object() {
             if let Some(regexp) = object.borrow().as_regexp() {
                 return Ok(JsValue::new(match flag {
                     b'g' => regexp.flags.contains(RegExpFlags::GLOBAL),
@@ -344,7 +344,7 @@ impl RegExp {
             }
 
             if JsObject::equals(
-                &object,
+                object,
                 &context.intrinsics().constructors().regexp().prototype,
             ) {
                 return Ok(JsValue::undefined());
@@ -679,7 +679,7 @@ impl RegExp {
         // 2. Perform ? RequireInternalSlot(R, [[RegExpMatcher]]).
         let obj = this
             .as_object()
-            .filter(JsObject::is_regexp)
+            .filter(|obj| obj.is_regexp())
             .ok_or_else(|| {
                 context.construct_type_error("RegExp.prototype.exec called with invalid value")
             })?;
@@ -723,7 +723,7 @@ impl RegExp {
             }
 
             // c. Return result.
-            return Ok(result.as_object());
+            return Ok(result.as_object().as_deref().cloned());
         }
 
         // 5. Perform ? RequireInternalSlot(R, [[RegExpMatcher]]).
@@ -1204,7 +1204,7 @@ impl RegExp {
         let mut replace_value = args.get_or_undefined(1).clone();
         let functional_replace = replace_value
             .as_object()
-            .as_ref()
+            .as_deref()
             .map(JsObject::is_callable)
             .unwrap_or_default();
 

@@ -516,7 +516,7 @@ impl Date {
 
         let hint = args.get_or_undefined(0);
 
-        let try_first = match hint.as_string().as_ref().map(JsString::as_str) {
+        let try_first = match hint.as_string().as_deref().map(JsString::as_str) {
             // 3. If hint is "string" or "default", then
             // a. Let tryFirst be string.
             Some("string" | "default") => PreferredType::String,

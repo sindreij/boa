@@ -26,6 +26,7 @@ use std::{
     cell::Cell,
     collections::HashSet,
     fmt::{self, Display},
+    marker::PhantomData,
     mem::ManuallyDrop,
     ops::Sub,
     str::FromStr,
@@ -253,12 +254,11 @@ impl JsValue {
     ///
     /// Calling this method with a [`JsValue`] that doesn't box
     /// a [`JsObject`] is undefined behaviour.
-    pub unsafe fn as_object_unchecked(&self) -> JsObject {
-        // SAFETY: The safety contract must be upheld by the caller
-        unsafe { JsObject::clone(&JsObject::from_void_ptr(self.as_pointer())) }
+    pub unsafe fn as_object_unchecked(&self) -> Ref<'_, JsObject> {
+        unsafe { Ref::new(JsObject::from_void_ptr(self.as_pointer())) }
     }
 
-    pub fn as_object(&self) -> Option<JsObject> {
+    pub fn as_object(&self) -> Option<Ref<'_, JsObject>> {
         if self.is_object() {
             return unsafe { Some(self.as_object_unchecked()) };
         }
@@ -279,14 +279,13 @@ impl JsValue {
     ///
     /// Calling this method with a [`JsValue`] that doesn't box
     /// a [`JsString`] is undefined behaviour.
-    pub unsafe fn as_string_unchecked(&self) -> JsString {
-        // SAFETY: The safety contract must be upheld by the caller
-        unsafe { JsString::clone(&JsString::from_void_ptr(self.as_pointer())) }
+    pub unsafe fn as_string_unchecked(&self) -> Ref<'_, JsString> {
+        unsafe { Ref::new(JsString::from_void_ptr(self.as_pointer())) }
     }
 
     /// Returns the string if the values is a string, otherwise `None`.
     #[inline]
-    pub fn as_string(&self) -> Option<JsString> {
+    pub fn as_string(&self) -> Option<Ref<'_, JsString>> {
         if self.is_string() {
             return unsafe { Some(self.as_string_unchecked()) };
         }
@@ -305,12 +304,11 @@ impl JsValue {
     ///
     /// Calling this method with a [`JsValue`] that doesn't box
     /// a [`JsSymbol`] is undefined behaviour.
-    pub unsafe fn as_symbol_unchecked(&self) -> JsSymbol {
-        // SAFETY: The safety contract must be upheld by the caller
-        unsafe { JsSymbol::clone(&JsSymbol::from_void_ptr(self.as_pointer())) }
+    pub unsafe fn as_symbol_unchecked(&self) -> Ref<'_, JsSymbol> {
+        unsafe { Ref::new(JsSymbol::from_void_ptr(self.as_pointer())) }
     }
 
-    pub fn as_symbol(&self) -> Option<JsSymbol> {
+    pub fn as_symbol(&self) -> Option<Ref<'_, JsSymbol>> {
         if self.is_symbol() {
             return unsafe { Some(self.as_symbol_unchecked()) };
         }
@@ -332,12 +330,12 @@ impl JsValue {
     /// Calling this method with a [`JsValue`] that doesn't box
     /// a [`JsBigInt`] is undefined behaviour.
     #[inline]
-    pub unsafe fn as_bigint_unchecked(&self) -> JsBigInt {
+    pub unsafe fn as_bigint_unchecked(&self) -> Ref<'_, JsBigInt> {
         // SAFETY: The safety contract must be upheld by the caller
-        unsafe { JsBigInt::clone(&JsBigInt::from_void_ptr(self.as_pointer())) }
+        unsafe { Ref::new(JsBigInt::from_void_ptr(self.as_pointer())) }
     }
 
-    pub fn as_bigint(&self) -> Option<JsBigInt> {
+    pub fn as_bigint(&self) -> Option<Ref<'_, JsBigInt>> {
         if self.is_bigint() {
             return unsafe { Some(self.as_bigint_unchecked()) };
         }
@@ -345,7 +343,7 @@ impl JsValue {
         None
     }
 
-    pub fn variant(&self) -> JsVariant {
+    pub fn variant(&self) -> JsVariant<'_> {
         unsafe {
             match self.tag() {
                 ValueTag::Null => JsVariant::Null,
@@ -362,17 +360,17 @@ impl JsValue {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum JsVariant {
+#[derive(Debug)]
+pub enum JsVariant<'a> {
     Null,
     Undefined,
     Rational(f64),
     Integer(i32),
     Boolean(bool),
-    String(JsString),
-    Symbol(JsSymbol),
-    BigInt(JsBigInt),
-    Object(JsObject),
+    String(Ref<'a, JsString>),
+    Symbol(Ref<'a, JsSymbol>),
+    BigInt(Ref<'a, JsBigInt>),
+    Object(Ref<'a, JsObject>),
 }
 
 impl From<bool> for JsValue {
@@ -575,24 +573,64 @@ pub(crate) unsafe trait PointerType {
     unsafe fn into_void_ptr(ty: ManuallyDrop<Self>) -> *mut ();
 }
 
-impl Clone for JsValue {
+/// Represents a reference to a boxed pointer type inside a [`JsValue`]
+///
+/// This is exclusively used to return references to [`JsString`], [`JsObject`],
+/// [`JsSymbol`] and [`JsBigInt`], since `NaN` boxing makes returning proper references
+/// difficult. It is mainly returned by the [`JsValue::variant`] method and the
+/// `as_` methods for checked casts to pointer types.
+///
+/// [`Ref`] implements [`Deref`][`std::ops::Deref`], which facilitates conversion
+/// to a proper [`reference`] by using the `ref` keyword or the
+/// [`Option::as_deref`][`std::option::Option::as_deref`] method.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ref<'a, T> {
+    inner: ManuallyDrop<T>,
+    _marker: PhantomData<&'a T>,
+}
+
+impl<T> Ref<'_, T> {
     #[inline]
-    fn clone(&self) -> Self {
-        unsafe {
-            match self.tag() {
-                ValueTag::Object => Self::new(self.as_object_unchecked()),
-                ValueTag::String => Self::new(self.as_string_unchecked()),
-                ValueTag::Symbol => Self::new(self.as_symbol_unchecked()),
-                ValueTag::BigInt => Self::new(self.as_bigint_unchecked()),
-                _ => Self {
-                    value: Cell::new(self.value.get()),
-                },
-            }
+    fn new(inner: ManuallyDrop<T>) -> Self {
+        Self {
+            inner,
+            _marker: PhantomData,
         }
     }
 }
 
+impl<T> std::borrow::Borrow<T> for Ref<'_, T> {
+    #[inline]
+    fn borrow(&self) -> &T {
+        &**self
+    }
+}
+
+impl<T> AsRef<T> for Ref<'_, T> {
+    #[inline]
+    fn as_ref(&self) -> &T {
+        &**self
+    }
+}
+
+impl<T> std::ops::Deref for Ref<'_, T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &*self.inner
+    }
+}
+
+impl<T: PartialEq> PartialEq<T> for Ref<'_, T> {
+    #[inline]
+    fn eq(&self, other: &T) -> bool {
+        &**self == other
+    }
+}
+
 impl Drop for JsValue {
+    #[inline]
     fn drop(&mut self) {
         unsafe {
             match self.tag() {
@@ -609,6 +647,23 @@ impl Drop for JsValue {
                     ManuallyDrop::into_inner(JsBigInt::from_void_ptr(self.as_pointer()));
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+impl Clone for JsValue {
+    #[inline]
+    fn clone(&self) -> Self {
+        unsafe {
+            match self.tag() {
+                ValueTag::Object => Self::new(self.as_object_unchecked().clone()),
+                ValueTag::String => Self::new(self.as_string_unchecked().clone()),
+                ValueTag::Symbol => Self::new(self.as_symbol_unchecked().clone()),
+                ValueTag::BigInt => Self::new(self.as_bigint_unchecked().clone()),
+                _ => Self {
+                    value: Cell::new(self.value.get()),
+                },
             }
         }
     }
@@ -720,9 +775,9 @@ mod tests_nan_box {
 
         let string = value.as_string().unwrap();
 
-        assert_eq!(JsString::refcount(&string), 2);
+        assert_eq!(JsString::refcount(&string), 1);
 
-        assert_eq!(string, "I am a string :)");
+        assert_eq!(*string, "I am a string :)");
     }
 
     #[test]
@@ -867,26 +922,26 @@ impl JsValue {
     #[inline]
     pub fn is_callable(&self) -> bool {
         self.as_object()
-            .as_ref()
+            .as_deref()
             .map_or(false, JsObject::is_callable)
     }
 
     #[inline]
-    pub fn as_callable(&self) -> Option<JsObject> {
-        self.as_object().filter(JsObject::is_callable)
+    pub fn as_callable(&self) -> Option<Ref<'_, JsObject>> {
+        self.as_object().filter(|obj| obj.is_callable())
     }
 
     /// Returns true if the value is a constructor object
     #[inline]
     pub fn is_constructor(&self) -> bool {
         self.as_object()
-            .as_ref()
+            .as_deref()
             .map_or(false, JsObject::is_constructor)
     }
 
     #[inline]
-    pub fn as_constructor(&self) -> Option<JsObject> {
-        self.as_object().filter(JsObject::is_constructor)
+    pub fn as_constructor(&self) -> Option<Ref<'_, JsObject>> {
+        self.as_object().filter(|obj| obj.is_constructor())
     }
 
     /// Returns true if the value is a 64-bit floating-point number.
@@ -937,10 +992,10 @@ impl JsValue {
         match self.variant() {
             JsVariant::Undefined | JsVariant::Null => false,
             JsVariant::Symbol(_) | JsVariant::Object(_) => true,
-            JsVariant::String(ref s) if !s.is_empty() => true,
+            JsVariant::String(s) if !s.is_empty() => true,
             JsVariant::Rational(n) if n != 0.0 && !n.is_nan() => true,
             JsVariant::Integer(n) if n != 0 => true,
-            JsVariant::BigInt(ref n) if !n.is_zero() => true,
+            JsVariant::BigInt(n) if !n.is_zero() => true,
             JsVariant::Boolean(v) => v,
             _ => false,
         }
@@ -1045,7 +1100,8 @@ impl JsValue {
             JsVariant::Undefined => {
                 context.throw_type_error("cannot convert undefined to a BigInt")
             }
-            JsVariant::String(ref string) => {
+            JsVariant::String(string) => {
+                let string = &*string;
                 if let Some(value) = JsBigInt::from_string(string) {
                     Ok(value)
                 } else {
@@ -1059,7 +1115,7 @@ impl JsValue {
             JsVariant::Integer(_) | JsVariant::Rational(_) => {
                 context.throw_type_error("cannot convert Number to a BigInt")
             }
-            JsVariant::BigInt(ref b) => Ok(b.clone()),
+            JsVariant::BigInt(b) => Ok(b.clone()),
             JsVariant::Object(_) => {
                 let primitive = self.to_primitive(context, PreferredType::Number)?;
                 primitive.to_bigint(context)
@@ -1100,9 +1156,9 @@ impl JsValue {
             JsVariant::Boolean(boolean) => Ok(boolean.to_string().into()),
             JsVariant::Rational(rational) => Ok(Number::to_native_string(rational).into()),
             JsVariant::Integer(integer) => Ok(integer.to_string().into()),
-            JsVariant::String(ref string) => Ok(string.clone()),
+            JsVariant::String(string) => Ok(string.clone()),
             JsVariant::Symbol(_) => context.throw_type_error("can't convert symbol to string"),
-            JsVariant::BigInt(ref bigint) => Ok(bigint.to_string().into()),
+            JsVariant::BigInt(bigint) => Ok(bigint.to_string().into()),
             JsVariant::Object(_) => {
                 let primitive = self.to_primitive(context, PreferredType::String)?;
                 primitive.to_string(context)
@@ -1141,7 +1197,7 @@ impl JsValue {
                     ObjectData::number(rational),
                 ))
             }
-            JsVariant::String(ref string) => {
+            JsVariant::String(string) => {
                 let prototype = context.intrinsics().constructors().string().prototype();
 
                 let object =
@@ -1157,14 +1213,14 @@ impl JsValue {
                 );
                 Ok(object)
             }
-            JsVariant::Symbol(ref symbol) => {
+            JsVariant::Symbol(symbol) => {
                 let prototype = context.intrinsics().constructors().symbol().prototype();
                 Ok(JsObject::from_proto_and_data(
                     prototype,
                     ObjectData::symbol(symbol.clone()),
                 ))
             }
-            JsVariant::BigInt(ref bigint) => {
+            JsVariant::BigInt(bigint) => {
                 let prototype = context
                     .intrinsics()
                     .constructors()
@@ -1175,7 +1231,7 @@ impl JsValue {
                     ObjectData::big_int(bigint.clone()),
                 ))
             }
-            JsVariant::Object(ref jsobject) => Ok(jsobject.clone()),
+            JsVariant::Object(jsobject) => Ok(jsobject.clone()),
         }
     }
 
@@ -1185,14 +1241,14 @@ impl JsValue {
     pub fn to_property_key(&self, context: &mut Context) -> JsResult<PropertyKey> {
         Ok(match self.variant() {
             // Fast path:
-            JsVariant::String(ref string) => string.clone().into(),
-            JsVariant::Symbol(ref symbol) => symbol.clone().into(),
+            JsVariant::String(string) => string.clone().into(),
+            JsVariant::Symbol(symbol) => symbol.clone().into(),
             // Slow path:
             _ => {
                 let primitive = self.to_primitive(context, PreferredType::String)?;
                 match primitive.variant() {
-                    JsVariant::String(ref string) => string.clone().into(),
-                    JsVariant::Symbol(ref symbol) => symbol.clone().into(),
+                    JsVariant::String(string) => string.clone().into(),
+                    JsVariant::Symbol(symbol) => symbol.clone().into(),
                     _ => primitive.to_string(context)?.into(),
                 }
             }
@@ -1205,7 +1261,7 @@ impl JsValue {
     pub fn to_numeric(&self, context: &mut Context) -> JsResult<Numeric> {
         let primitive = self.to_primitive(context, PreferredType::Number)?;
         if let Some(bigint) = primitive.as_bigint() {
-            return Ok(bigint.into());
+            return Ok(bigint.clone().into());
         }
         Ok(self.to_number(context)?.into())
     }
@@ -1515,7 +1571,7 @@ impl JsValue {
             JsVariant::Null => Ok(0.0),
             JsVariant::Undefined => Ok(f64::NAN),
             JsVariant::Boolean(b) => Ok(if b { 1.0 } else { 0.0 }),
-            JsVariant::String(ref string) => Ok(string.string_to_number()),
+            JsVariant::String(string) => Ok(string.string_to_number()),
             JsVariant::Rational(number) => Ok(number),
             JsVariant::Integer(integer) => Ok(f64::from(integer)),
             JsVariant::Symbol(_) => context.throw_type_error("argument must not be a symbol"),
@@ -1588,7 +1644,7 @@ impl JsValue {
             JsVariant::Null => "object",
             JsVariant::Undefined => "undefined",
             JsVariant::BigInt(_) => "bigint",
-            JsVariant::Object(ref object) => {
+            JsVariant::Object(object) => {
                 if object.is_callable() {
                     "function"
                 } else {

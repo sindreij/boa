@@ -164,7 +164,7 @@ impl DataView {
             prototype,
             ObjectData::data_view(Self {
                 // 11. Set O.[[ViewedArrayBuffer]] to buffer.
-                viewed_array_buffer: buffer_obj,
+                viewed_array_buffer: buffer_obj.clone(),
                 // 12. Set O.[[ByteLength]] to viewByteLength.
                 byte_length: view_byte_length,
                 // 13. Set O.[[ByteOffset]] to offset.
@@ -195,7 +195,7 @@ impl DataView {
         // 1. Let O be the this value.
         // 2. Perform ? RequireInternalSlot(O, [[DataView]]).
         let dataview = this.as_object();
-        let dataview = dataview.as_ref().map(JsObject::borrow);
+        let dataview = dataview.as_deref().map(JsObject::borrow);
         let dataview = dataview
             .as_ref()
             .and_then(|obj| obj.as_data_view())
@@ -225,7 +225,7 @@ impl DataView {
         // 1. Let O be the this value.
         // 2. Perform ? RequireInternalSlot(O, [[DataView]]).
         let dataview = this.as_object();
-        let dataview = dataview.as_ref().map(JsObject::borrow);
+        let dataview = dataview.as_deref().map(JsObject::borrow);
         let dataview = dataview
             .as_ref()
             .and_then(|obj| obj.as_data_view())
@@ -265,7 +265,7 @@ impl DataView {
         // 1. Let O be the this value.
         // 2. Perform ? RequireInternalSlot(O, [[DataView]]).
         let dataview = this.as_object();
-        let dataview = dataview.as_ref().map(JsObject::borrow);
+        let dataview = dataview.as_deref().map(JsObject::borrow);
         let dataview = dataview
             .as_ref()
             .and_then(|obj| obj.as_data_view())
@@ -306,7 +306,7 @@ impl DataView {
         // 1. Perform ? RequireInternalSlot(view, [[DataView]]).
         // 2. Assert: view has a [[ViewedArrayBuffer]] internal slot.
         let view = view.as_object();
-        let view = view.as_ref().map(JsObject::borrow);
+        let view = view.as_deref().map(JsObject::borrow);
         let view = view
             .as_ref()
             .and_then(|obj| obj.as_data_view())
@@ -666,7 +666,7 @@ impl DataView {
         // 1. Perform ? RequireInternalSlot(view, [[DataView]]).
         // 2. Assert: view has a [[ViewedArrayBuffer]] internal slot.
         let view = view.as_object();
-        let view = view.as_ref().map(JsObject::borrow);
+        let view = view.as_deref().map(JsObject::borrow);
         let view = view
             .as_ref()
             .and_then(|obj| obj.as_data_view())

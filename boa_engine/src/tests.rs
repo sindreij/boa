@@ -841,9 +841,12 @@ mod in_operator {
         let foo_val = forward_val(&mut context, "Foo").unwrap();
         assert_eq!(
             *bar_obj.prototype(),
-            foo_val
+            foo_val.as_object().and_then(|obj| obj
+                .get("prototype", &mut context)
+                .unwrap()
                 .as_object()
-                .and_then(|obj| obj.get("prototype", &mut context).unwrap().as_object())
+                .as_deref()
+                .cloned())
         );
     }
 }

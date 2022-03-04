@@ -109,6 +109,8 @@ impl JsArray {
     pub fn concat(&self, items: &[JsValue], context: &mut Context) -> JsResult<Self> {
         let object = Array::concat(&self.inner.clone().into(), items, context)?
             .as_object()
+            .as_deref()
+            .cloned()
             .expect("Array.prototype.filter should always return object");
 
         Self::from_object(object, context)
@@ -123,6 +125,8 @@ impl JsArray {
         )
         .map(|x| {
             x.as_string()
+                .as_deref()
+                .cloned()
                 .expect("Array.prototype.join always returns string")
         })
     }
@@ -229,6 +233,8 @@ impl JsArray {
             context,
         )?
         .as_object()
+        .as_deref()
+        .cloned()
         .expect("Array.prototype.filter should always return object");
 
         Self::from_object(object, context)
@@ -247,6 +253,8 @@ impl JsArray {
             context,
         )?
         .as_object()
+        .as_deref()
+        .cloned()
         .expect("Array.prototype.map should always return object");
 
         Self::from_object(object, context)
@@ -312,6 +320,8 @@ impl JsArray {
             context,
         )?
         .as_object()
+        .as_deref()
+        .cloned()
         .expect("Array.prototype.slice should always return object");
 
         Self::from_object(object, context)

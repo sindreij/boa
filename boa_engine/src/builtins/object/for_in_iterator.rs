@@ -68,7 +68,7 @@ impl ForInIterator {
     /// [spec]: https://tc39.es/ecma262/#sec-%foriniteratorprototype%.next
     pub(crate) fn next(this: &JsValue, _: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
         let iterator = this.as_object();
-        let mut iterator = iterator.as_ref().map(JsObject::borrow_mut);
+        let mut iterator = iterator.as_deref().map(JsObject::borrow_mut);
         let iterator = iterator
             .as_mut()
             .and_then(|obj| obj.as_for_in_iterator_mut())

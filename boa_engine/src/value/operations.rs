@@ -16,15 +16,11 @@ impl JsValue {
             (JsVariant::Integer(x), JsVariant::Rational(y)) => Self::new(f64::from(x) + y),
             (JsVariant::Rational(x), JsVariant::Integer(y)) => Self::new(x + f64::from(y)),
 
-            (JsVariant::String(ref x), JsVariant::String(ref y)) => {
-                Self::from(JsString::concat(x, y))
+            (JsVariant::String(x), JsVariant::String(y)) => Self::from(JsString::concat(&*x, &*y)),
+            (JsVariant::String(x), _) => {
+                Self::new(JsString::concat(&*x, other.to_string(context)?))
             }
-            (JsVariant::String(ref x), _) => {
-                Self::new(JsString::concat(x, other.to_string(context)?))
-            }
-            (_, JsVariant::String(ref y)) => {
-                Self::new(JsString::concat(self.to_string(context)?, y))
-            }
+            (_, JsVariant::String(y)) => Self::new(JsString::concat(self.to_string(context)?, &*y)),
             (JsVariant::BigInt(ref x), JsVariant::BigInt(ref y)) => Self::new(JsBigInt::add(x, y)),
 
             // Slow path:
@@ -32,11 +28,11 @@ impl JsValue {
                 let x = self.to_primitive(context, PreferredType::Default)?;
                 let y = other.to_primitive(context, PreferredType::Default)?;
                 match (x.variant(), y.variant()) {
-                    (JsVariant::String(ref x), _) => {
-                        Self::from(JsString::concat(x, y.to_string(context)?))
+                    (JsVariant::String(x), _) => {
+                        Self::from(JsString::concat(&*x, y.to_string(context)?))
                     }
-                    (_, JsVariant::String(ref y)) => {
-                        Self::from(JsString::concat(x.to_string(context)?, y))
+                    (_, JsVariant::String(y)) => {
+                        Self::from(JsString::concat(x.to_string(context)?, &*y))
                     }
                     (_, _) => match (x.to_numeric(context)?, y.to_numeric(context)?) {
                         (Numeric::Number(x), Numeric::Number(y)) => Self::new(x + y),
@@ -510,7 +506,7 @@ impl JsValue {
             (JsVariant::Integer(x), JsVariant::Rational(y)) => Number::less_than(f64::from(x), y),
             (JsVariant::Rational(x), JsVariant::Integer(y)) => Number::less_than(x, f64::from(y)),
             (JsVariant::Rational(x), JsVariant::Rational(y)) => Number::less_than(x, y),
-            (JsVariant::BigInt(ref x), JsVariant::BigInt(ref y)) => (x < y).into(),
+            (JsVariant::BigInt(x), JsVariant::BigInt(y)) => (x < y).into(),
 
             // Slow path:
             (_, _) => {
@@ -526,7 +522,7 @@ impl JsValue {
                 };
 
                 match (px.variant(), py.variant()) {
-                    (JsVariant::String(ref x), JsVariant::String(ref y)) => {
+                    (JsVariant::String(x), JsVariant::String(y)) => {
                         if x.starts_with(y.as_str()) {
                             return Ok(AbstractRelation::False);
                         }
@@ -540,14 +536,14 @@ impl JsValue {
                         }
                         unreachable!()
                     }
-                    (JsVariant::BigInt(ref x), JsVariant::String(ref y)) => {
+                    (JsVariant::BigInt(x), JsVariant::String(ref y)) => {
                         if let Some(y) = JsBigInt::from_string(y) {
                             (*x < y).into()
                         } else {
                             AbstractRelation::Undefined
                         }
                     }
-                    (JsVariant::String(ref x), JsVariant::BigInt(ref y)) => {
+                    (JsVariant::String(ref x), JsVariant::BigInt(y)) => {
                         if let Some(x) = JsBigInt::from_string(x) {
                             (x < *y).into()
                         } else {

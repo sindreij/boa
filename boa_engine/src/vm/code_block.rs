@@ -789,7 +789,7 @@ impl JsObject {
                     .expect("GeneratorFunction must have a prototype property")
                     .as_object()
                 {
-                    prototype
+                    prototype.clone()
                 } else {
                     context.intrinsics().constructors().generator().prototype()
                 };
