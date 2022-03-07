@@ -101,7 +101,7 @@ struct Opt {
     )]
     dump_ast: Option<Option<DumpFormat>>,
 
-    /// Dump the AST to stdout with the given format.
+    /// Dump the compiled bytecode and trace the execution stack
     #[structopt(long = "trace", short = "t")]
     trace: bool,
 
