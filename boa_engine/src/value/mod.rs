@@ -606,10 +606,15 @@ impl<T> std::borrow::Borrow<T> for Ref<'_, T> {
     }
 }
 
-impl<T> AsRef<T> for Ref<'_, T> {
+// Lift `Ref` over `AsRef`, since implementing `AsRef<T>` would override the
+// `as_ref` implementations of `T`.
+impl<U, T> AsRef<U> for Ref<'_, T>
+where
+    T: AsRef<U>,
+{
     #[inline]
-    fn as_ref(&self) -> &T {
-        &**self
+    fn as_ref(&self) -> &U {
+        <T as AsRef<U>>::as_ref(&*self)
     }
 }
 
